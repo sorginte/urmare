@@ -1,0 +1,15 @@
+# Rust build output
+/target/
+
+# Python artifacts created while exercising fixture repositories
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+
+# macOS metadata
+.DS_Store
