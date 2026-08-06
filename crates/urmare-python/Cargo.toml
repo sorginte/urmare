@@ -1,0 +1,25 @@
+[package]
+name = "urmare-python"
+description = "Python repository discovery and static import analysis for Urmare"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "urmare_python"
+path = "src/lib.rs"
+
+[dependencies]
+globset.workspace = true
+ruff_python_ast.workspace = true
+ruff_python_parser.workspace = true
+ruff_source_file.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3.20"

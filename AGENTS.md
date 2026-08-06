@@ -125,7 +125,23 @@ Do not hide uncertainty behind a single opaque score.
 
 ---
 
-## 4. Explain every conclusion
+## 4. Correctness favors recall
+
+Urmare optimizes primarily for **impact recall**.
+
+Missing an affected dependency or test is more harmful than including an unaffected one. Therefore:
+
+- false positives are acceptable when needed for safety
+- false negatives should be treated as the more serious failure mode
+- when analysis is uncertain, prefer conservative over-selection
+- uncertainty should be exposed explicitly when possible rather than hidden
+- optimizations that reduce selected tests must not silently reduce confidence in correctness
+
+The MVP only models certain/static import relationships, but its behavior should already follow this conservative principle.
+
+---
+
+## 5. Explain every conclusion
 
 Whenever the system claims that entity A affects entity B, the relationship should be explainable.
 
@@ -143,7 +159,7 @@ Commands such as `why` should rely on graph paths rather than hand-written heuri
 
 ---
 
-## 5. Standards first
+## 6. Standards first
 
 Prefer standard Python project conventions.
 
@@ -166,6 +182,66 @@ Additional integrations may include:
 - Flask
 
 Do not unnecessarily require users to adopt another build metadata format.
+
+---
+
+## 7. Python syntax compatibility is explicit
+
+The initial source-syntax compatibility target is **Python 3.9 through Python 3.14**.
+
+Urmare analyzes source code; it does not need to execute each supported Python version. The parser and import-analysis layer should be chosen and structured so repositories using valid syntax across this range can be analyzed.
+
+Do not silently assume that the developer's locally installed Python version defines the syntax Urmare can understand.
+
+---
+
+## 8. Repository-relative paths are canonical
+
+Repository-relative normalized paths are the canonical identity for user-facing and machine-readable file results.
+
+Examples:
+
+```text
+src/payments/service.py
+tests/api/test_checkout.py
+```
+
+Architectural guidance:
+
+- use Rust path types for filesystem operations
+- avoid treating arbitrary absolute path strings as stable graph identity
+- normalize discovered files relative to the repository root
+- keep OS-specific absolute paths at system boundaries only
+- use stable repository-relative paths in JSON and human output
+- ensure equivalent Windows and Unix paths resolve to the same logical repository entity
+
+---
+
+## 9. Portable distribution is an architectural constraint
+
+Urmare is intended to ship as a prebuilt standalone binary across mainstream developer platforms.
+
+The implementation should remain compatible with eventual distribution for:
+
+- macOS on ARM64 and x86-64
+- Linux on ARM64 and x86-64
+- Windows on x86-64, with ARM64 support likely later
+- Linux glibc environments
+- Linux musl environments where practical
+
+Users should not need Rust installed in order to use Urmare through the primary distribution channels.
+
+When choosing dependencies or implementation techniques:
+
+- avoid unnecessary platform-specific assumptions
+- avoid unnecessary dynamically linked native dependencies
+- prefer portable Rust crates when practical
+- do not assume a particular Linux distribution
+- do not assume `/usr/bin`, GNU-only utilities, Bash, or Unix path semantics in core logic
+- keep filesystem and path handling cross-platform
+- avoid designs that unnecessarily couple the binary to a specific CPython ABI
+
+Do not add release automation during unrelated feature work. Portability should influence architecture now; packaging and release workflows belong to later implementation slices.
 
 ---
 
@@ -554,6 +630,8 @@ Before adding a crate, consider:
 - compile-time cost
 - transitive dependency count
 - performance
+- portability and cross-compilation implications
+- native/system dependencies
 - whether standard library functionality is sufficient
 
 ---
@@ -577,6 +655,8 @@ Do not refactor unrelated code unless necessary.
 Do not introduce speculative abstractions without an immediate use.
 
 Do not build future roadmap functionality prematurely.
+
+Do not add packaging or release infrastructure unless the task explicitly asks for it.
 
 ---
 

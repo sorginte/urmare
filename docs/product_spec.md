@@ -121,6 +121,70 @@ The project should:
 
 ---
 
+# Correctness Principle
+
+Urmare optimizes primarily for **impact recall**.
+
+For impact analysis, a false negative is more dangerous than a false positive:
+
+- a false positive may cause an unnecessary test or validation step to run
+- a false negative may allow affected code to go unvalidated
+
+Therefore Urmare should prefer conservative over-selection whenever analysis is uncertain.
+
+This principle should guide:
+
+- import resolution
+- affected-module calculation
+- affected-test selection
+- future confidence levels
+- future CI planning
+
+When uncertainty can be identified, Urmare should expose it instead of presenting uncertain analysis as certain.
+
+---
+
+# Python Syntax Compatibility
+
+The initial source-syntax compatibility target is:
+
+```text
+Python 3.9 through Python 3.14
+```
+
+Urmare analyzes Python source code and should not require those Python interpreters to be installed.
+
+The parser and analysis architecture should support valid syntax used by repositories targeting that range. Parser selection should explicitly consider this compatibility requirement.
+
+This is a source-analysis compatibility target, not a promise that Urmare executes or emulates Python runtime semantics for every supported version.
+
+---
+
+# Canonical Path Model
+
+Repository-relative normalized paths are the canonical representation of files in user-facing and machine-readable Urmare results.
+
+Examples:
+
+```text
+src/payments/stripe.py
+tests/api/test_checkout.py
+```
+
+Absolute OS-specific paths should not become durable public identifiers.
+
+The implementation should:
+
+- discover files using native filesystem path handling
+- normalize them relative to the detected repository root
+- use repository-relative identity for graph/domain models where practical
+- serialize paths in a stable cross-platform form
+- avoid leaking Windows drive letters or machine-specific absolute prefixes into JSON results
+
+This is important for reproducible CI output, caching, agent integrations, and cross-platform behavior.
+
+---
+
 # Target Users
 
 ## Individual Python developers
@@ -183,16 +247,30 @@ Urmare responds:
 ```text
 Impact analysis
 
-Changed:
+Changed (1)
   src/payments/service.py
 
-Affected:
-  12 modules
-  38 tests
+Summary
+  Directly affected modules       3
+  Transitively affected modules   9
+  Affected tests                 38
 
-Blast radius:
-  MEDIUM
+Directly affected modules (3)
+  src/api/checkout.py
+  src/payments/commands.py
+  src/payments/refunds.py
+
+Transitively affected modules (9)
+  ...
+
+Affected tests (38)
+  tests/api/test_checkout.py
+  tests/payments/test_service.py
+  ...
 ```
+
+Human-readable lists may be truncated for large results and must tell the user
+that `--all` displays every entry. JSON output is always complete.
 
 ---
 
@@ -222,9 +300,12 @@ Urmare responds:
 
 ```text
 tests/api/test_checkout.py
-  -> api.checkout
-  -> payments.service
-  -> payments.stripe
+  -> src/api/checkout.py
+     via tests/api/test_checkout.py:1:17  from api import checkout
+  -> src/payments/service.py
+     via src/api/checkout.py:1:30  from payments.service import create_payment
+  -> src/payments/stripe.py
+     via src/payments/service.py:1:15  from . import stripe
 ```
 
 ---
@@ -345,6 +426,44 @@ The user should be able to inspect at least one valid dependency path.
 
 Build and inspect repository graph.
 
+Support stable machine-readable output:
+
+```bash
+urmare graph --json
+```
+
+Human unresolved-import diagnostics are bounded by default:
+
+```bash
+urmare graph --all
+```
+
+Detailed graph inspection and local module-resolution tracing are opt-in:
+
+```bash
+urmare graph --debug
+urmare graph --debug --focus src/payments/service.py
+urmare graph --debug --json
+```
+
+`--debug` reports inferred source roots, canonical path-to-module mappings,
+resolved edges with every located import that created them, and deterministic
+resolution traces. A trace contains all dotted module candidates considered,
+all repository-local matches, and one of these statuses:
+
+```text
+resolved
+unresolved
+invalid_relative_import
+```
+
+`unresolved` means no candidate matched a repository-local module. An invalid
+relative import is reported separately when it ascends above the importer
+package. `--focus <file>` requires `--debug`; it scopes module mappings and
+originating resolution traces to that file while retaining incident incoming
+and outgoing edges. Human debug sections are bounded unless `--all` is passed.
+Debug JSON is complete.
+
 Potential output:
 
 ```text
@@ -355,6 +474,11 @@ Modules:             1,231
 Import edges:        7,482
 Tests:                 314
 Unresolved imports:     17
+
+Unresolved import details (17)
+  No repository-local module matched; external packages are not resolved.
+  src/api/app.py:14:8  import fastapi
+  ...
 
 Indexed in 84 ms
 ```
@@ -367,30 +491,43 @@ Example:
 
 ```bash
 urmare impact src/payments/stripe.py
+urmare impact src/payments/stripe.py src/payments/models.py
 ```
 
 Output:
 
 ```text
-Blast radius
+Impact analysis
 
-Changed:
+Changed (1)
   src/payments/stripe.py
 
-Direct dependents:
-  4
+Summary
+  Directly affected modules       4
+  Transitively affected modules  21
+  Affected tests                 13
 
-Transitive dependents:
-  21
+Directly affected modules (4)
+  src/payments/service.py
+  ...
 
-Affected tests:
-  13
+Transitively affected modules (21)
+  src/api/checkout.py
+  ...
 
-Risk:
-  LOW
+Affected tests (13)
+  tests/api/test_checkout.py
+  ...
 ```
 
-Risk may initially be omitted or implemented as a very simple deterministic classification.
+Test files are listed in the affected-tests section rather than duplicated in
+the module sections. Human output shows a bounded number of entries per section
+unless `--all` is provided. `--json` remains complete and machine-readable.
+
+Explicit impact accepts one or more changed files. Urmare normalizes duplicate
+or equivalent paths, unions their reverse dependency closures, and retains all
+changed-file attribution for each result. Explicit paths and `--git-diff` are
+mutually exclusive.
 
 ---
 
@@ -400,6 +537,7 @@ Example:
 
 ```bash
 urmare tests --affected src/payments/stripe.py
+urmare tests --affected src/payments/stripe.py src/payments/models.py
 ```
 
 Output:
@@ -420,6 +558,7 @@ Example:
 
 ```bash
 urmare why src/payments/stripe.py tests/api/test_checkout.py
+urmare why src/payments/stripe.py tests/api/test_checkout.py --json
 ```
 
 Output:
@@ -427,8 +566,11 @@ Output:
 ```text
 tests/api/test_checkout.py
   -> src/api/checkout.py
+     via tests/api/test_checkout.py:1:17  from api import checkout
   -> src/payments/service.py
+     via src/api/checkout.py:1:30  from payments.service import create_payment
   -> src/payments/stripe.py
+     via src/payments/service.py:1:15  from . import stripe
 ```
 
 ---
@@ -563,21 +705,13 @@ affected tests
 dynamic/uncertain relationships
 ```
 
-Example output:
+A future specification must define the inputs, weighting, thresholds, and
+explanations before any score or classification is exposed. This feature is not
+required for the first MVP.
 
-```text
-Risk: 78 / 100
-HIGH
-
-Reasons:
-  + public interface changed
-  + 3 packages affected
-  + 41 downstream modules
-  + 2 services affected
-  - strong test coverage
-```
-
-This feature is not required for the first MVP.
+Until that model is formally specified and implemented, Urmare must not emit
+risk scores or `LOW`, `MEDIUM`, or `HIGH` risk/blast-radius classifications.
+Counts and explainable dependency paths are the deterministic MVP output.
 
 ---
 
@@ -596,13 +730,13 @@ Urmare should infer:
 - package structure
 - tests
 
-Later, optional configuration can live in:
+Optional configuration lives in:
 
 ```toml
 [tool.urmare]
 ```
 
-Possible future fields:
+The current repository-boundary fields are:
 
 ```toml
 [tool.urmare]
@@ -613,16 +747,77 @@ exclude = ["generated/**"]
 
 Configuration should supplement inference, not replace it.
 
+`source-roots` controls Python module identity. `test-roots` supplements pytest
+filename conventions by classifying every discovered Python file beneath a
+configured root as a test. `exclude` contains repository-relative portable
+glob patterns applied before parsing and graph construction; `/` is the
+configuration separator on every operating system, `*` stays within one path
+component, and `**` may cross directory boundaries. A matched directory prunes
+its subtree. Exclusions take precedence over configured roots and also apply to
+Git-aware change selection.
+
+All configured roots must be non-empty repository-relative directories and may
+not escape through `..`. Invalid, absolute, or duplicate roots and patterns are
+actionable configuration errors. Built-in ignores for Git metadata, common
+virtual environments, and Python tool caches remain active independently of
+configuration.
+
 ---
 
 # JSON Output
 
 Machine-readable output is a first-class requirement.
 
+All MVP commands support `--json`. Successful output includes
+`"schema_version": 1`; incompatible schema changes require a new version.
+Failures write no partial JSON to stdout and return the normal non-zero CLI
+status with an actionable diagnostic on stderr.
+
+Graph output serializes repository totals and the complete structured set of
+imports that did not match any repository-local module:
+
+```json
+{
+  "schema_version": 1,
+  "python_files": 1284,
+  "modules": 1231,
+  "import_edges": 7482,
+  "tests": 314,
+  "unresolved_imports": 1,
+  "unresolved_import_details": [
+    {
+      "importer": "src/api/app.py",
+      "line": 14,
+      "column": 8,
+      "import": {
+        "kind": "import",
+        "module": "fastapi"
+      }
+    }
+  ]
+}
+```
+
+Locations are one-indexed and point to the imported target. For `from`
+imports, the nested import object contains `kind`, nullable `module`, `name`,
+and relative `level`. Human output may truncate with guidance to use `--all`;
+JSON is never truncated.
+
+An unresolved diagnostic means only that no repository-local module matched.
+Urmare does not inspect installed environments or package indexes, does not
+classify these entries as errors, and does not create external graph nodes.
+
+When `graph --debug --json` is requested, graph schema version 1 adds an
+`inspection` object. It contains optional `focus`, `source_roots`, module
+mappings with forward/reverse neighbors, unique resolved edges with all source
+imports, and complete resolution traces. Plain `graph --json` omits this
+optional additive object and retains the concise summary shape.
+
 Example conceptual schema:
 
 ```json
 {
+  "schema_version": 1,
   "changed": [
     "src/payments/stripe.py"
   ],
@@ -638,7 +833,44 @@ Example conceptual schema:
 }
 ```
 
+Dependency explanations serialize canonical endpoints and the ordered path
+from affected dependent toward changed dependency. They also contain an
+additive `steps` array with the exact import evidence for every path hop:
+
+```json
+{
+  "schema_version": 1,
+  "changed": "src/payments/stripe.py",
+  "affected": "tests/api/test_checkout.py",
+  "path": [
+    "tests/api/test_checkout.py",
+    "src/api/checkout.py",
+    "src/payments/stripe.py"
+  ],
+  "steps": [
+    {
+      "dependent": "tests/api/test_checkout.py",
+      "dependency": "src/api/checkout.py",
+      "imports": [
+        {
+          "line": 1,
+          "column": 17,
+          "import": {
+            "kind": "from",
+            "module": "api",
+            "name": "checkout",
+            "level": 0
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
 Schema stability becomes increasingly important once CI/agent integrations exist.
+
+All serialized file paths should use the canonical repository-relative normalized representation rather than machine-specific absolute paths.
 
 ---
 
@@ -753,6 +985,177 @@ This may become one of the project's strongest long-term differentiators.
 
 ---
 
+# Distribution and Release Vision
+
+Distribution is a first-class product experience, but release infrastructure is post-MVP.
+
+The guiding principle is:
+
+> One source commit and one Git tag should produce one Urmare version consistently across every supported distribution channel.
+
+The release system should eventually build and publish multiple platform-specific artifacts automatically.
+
+## Canonical release source
+
+GitHub Releases should initially be the canonical source for raw prebuilt binaries.
+
+A release such as:
+
+```text
+v0.1.0
+```
+
+should eventually correspond to platform-specific archives similar to:
+
+```text
+urmare-v0.1.0-aarch64-apple-darwin.tar.gz
+urmare-v0.1.0-x86_64-apple-darwin.tar.gz
+
+urmare-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+urmare-v0.1.0-aarch64-unknown-linux-gnu.tar.gz
+
+urmare-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+urmare-v0.1.0-aarch64-unknown-linux-musl.tar.gz
+
+urmare-v0.1.0-x86_64-pc-windows-msvc.zip
+```
+
+The exact naming may evolve.
+
+## Initial platform targets
+
+Priority targets:
+
+```text
+macOS ARM64
+macOS x86-64
+Linux glibc x86-64
+Linux glibc ARM64
+Windows x86-64
+```
+
+Early follow-up targets:
+
+```text
+Linux musl x86-64
+Linux musl ARM64
+```
+
+Potential later target:
+
+```text
+Windows ARM64
+```
+
+Do not create per-distribution builds for Ubuntu, Debian, Fedora, RHEL, and similar distributions. Linux compatibility should be handled through appropriate glibc/manylinux and musl targets instead.
+
+## PyPI and uv
+
+Although Urmare is written in Rust, Python developers are the primary audience.
+
+The preferred eventual user experience is:
+
+```bash
+uv tool install urmare
+```
+
+or:
+
+```bash
+uvx urmare impact --git-diff main
+```
+
+PyPI should therefore be a first-class distribution channel.
+
+Where possible, Python packaging should ship the standalone Urmare binary in platform-specific wheels rather than requiring compilation on the user's machine.
+
+The packaging design should avoid coupling Urmare unnecessarily to individual CPython ABIs or requiring a separate artifact matrix for every Python minor version.
+
+Publishing should eventually use trusted/OIDC-based publishing rather than long-lived repository secrets where supported.
+
+## crates.io
+
+Urmare should also be publishable through crates.io:
+
+```bash
+cargo install urmare
+```
+
+This is a secondary installation path for Rust users and contributors, not the primary installation path for Python developers.
+
+## Homebrew
+
+A Sorginte Homebrew tap is an expected post-launch channel:
+
+```bash
+brew install sorginte/tap/urmare
+```
+
+A future repository may be:
+
+```text
+github.com/sorginte/homebrew-tap
+```
+
+## Standalone installers
+
+Future releases should support a simple shell installer on Unix-like systems and PowerShell installer on Windows.
+
+These installers should:
+
+- detect operating system
+- detect CPU architecture
+- select the correct prebuilt artifact
+- verify integrity
+- install the binary
+
+They should consume the canonical release artifacts rather than compile Urmare locally.
+
+## Sorginte website
+
+The Sorginte website is primarily:
+
+- the organization presentation site
+- Urmare's product landing page
+- documentation
+- installation instructions
+- links to releases
+
+Initially, binaries do not need to be hosted directly by Sorginte infrastructure.
+
+The website can link to or redirect to GitHub Release artifacts and PyPI. A future Sorginte-controlled release mirror or CDN may be added if adoption warrants it.
+
+## Release integrity
+
+Every public release should eventually include:
+
+- cryptographic checksums
+- reproducible release metadata where practical
+- provenance or attestations from the release workflow
+
+Later stages may add:
+
+- SBOMs
+- macOS signing and notarization
+- Windows code signing
+- additional package managers
+
+## Architectural implication
+
+Because Urmare will be distributed as prebuilt binaries across operating systems and CPU architectures:
+
+- keep the core binary portable
+- minimize unnecessary native dependencies
+- avoid assumptions tied to a specific Linux distribution
+- keep path handling cross-platform
+- prefer dependencies that cross-compile cleanly
+- avoid requiring Rust on end-user machines
+- avoid unnecessary CPython ABI coupling
+
+These constraints should influence implementation decisions now even though the release pipeline itself is not part of the MVP.
+
+---
+
 # Sorginte Product Family
 
 Urmare is the first Sorginte product.
@@ -782,6 +1185,11 @@ Do not implement:
 - service discovery
 - Docker analysis
 - framework-specific semantics
+- PyPI packaging
+- GitHub release automation
+- Homebrew publishing
+- installer generation
+- signing or notarization
 
 Unless an MVP requirement strictly depends on one of these, defer it.
 

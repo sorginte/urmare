@@ -1,0 +1,6 @@
+[project]
+name = "urmare-multiple-roots-fixture"
+version = "0.0.0"
+
+[tool.urmare]
+source-roots = ["packages/payments/src", "packages/api/src"]

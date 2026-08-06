@@ -1,0 +1,4 @@
+[tool.urmare]
+source-roots = ["src"]
+test-roots = ["verification"]
+exclude = ["src/generated/**", "vendor", "verification/snapshots/**"]
