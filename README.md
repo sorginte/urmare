@@ -46,7 +46,7 @@ call-graph, runtime, or framework-specific semantic understanding.
 
 ## Build
 
-Urmare is a Rust workspace and currently builds with stable Rust:
+Urmare is a Rust workspace and requires Rust 1.85 or newer:
 
 ```bash
 git clone https://github.com/sorginte/urmare.git
@@ -65,6 +65,14 @@ cargo run -p urmare-cli -- graph
 ```
 
 ## Usage
+
+Use the top-level help to discover commands and command-specific help to inspect
+their arguments and options:
+
+```bash
+urmare --help
+urmare help graph
+```
 
 Run Urmare from the repository being analyzed:
 
@@ -115,6 +123,8 @@ attempt. Each trace distinguishes resolved imports, unmatched imports, and
 relative imports that ascend above the importer package; it lists every dotted
 module candidate considered and every repository path matched.
 
+The following is an abbreviated inspection:
+
 ```text
 Graph inspection
 
@@ -124,6 +134,7 @@ Module mappings (1)
 Resolved import edges (3)
   src/payments/service.py -> src/payments/stripe.py
     via src/payments/service.py:1:15  from . import stripe
+  ...
 
 Import resolution trace (1)
   src/payments/service.py:1:15  from . import stripe [resolved]
@@ -369,6 +380,38 @@ each adjacent path pair:
             "module": "api",
             "name": "checkout",
             "level": 0
+          }
+        }
+      ]
+    },
+    {
+      "dependent": "src/api/checkout.py",
+      "dependency": "src/payments/service.py",
+      "imports": [
+        {
+          "line": 1,
+          "column": 30,
+          "import": {
+            "kind": "from",
+            "module": "payments.service",
+            "name": "create_payment",
+            "level": 0
+          }
+        }
+      ]
+    },
+    {
+      "dependent": "src/payments/service.py",
+      "dependency": "src/payments/stripe.py",
+      "imports": [
+        {
+          "line": 1,
+          "column": 15,
+          "import": {
+            "kind": "from",
+            "module": null,
+            "name": "stripe",
+            "level": 1
           }
         }
       ]

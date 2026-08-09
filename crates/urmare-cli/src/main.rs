@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 use urmare_core::{
     AnalysisError, DependencyPath, GitDiffAnalysis, GraphInspection, ImpactResult,
@@ -18,7 +18,8 @@ const LIST_LIMIT: usize = 25;
 #[command(
     name = "urmare",
     version,
-    about = "Explain what follows from a Python code change"
+    about = "Explain what follows from a Python code change",
+    after_help = "Run 'urmare help <COMMAND>' for command-specific options."
 )]
 struct Cli {
     /// Repository root to analyze.
@@ -32,46 +33,41 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Build and summarize the local import graph.
+    #[command(
+        after_help = "Examples:\n  urmare graph\n  urmare graph --debug\n  urmare graph --json"
+    )]
     Graph {
         /// Emit stable, schema-versioned JSON.
         #[arg(long)]
         json: bool,
-        /// Show every unresolved import and debug result in human-readable output.
+        /// Show every human-readable unresolved import and debug result; incompatible with --json.
         #[arg(long, conflicts_with = "json")]
         all: bool,
         /// Show module mappings, resolved edges, and import-resolution traces.
         #[arg(long)]
         debug: bool,
-        /// Restrict debug inspection to one indexed Python file.
+        /// Restrict debug inspection to one indexed Python file; requires --debug.
         #[arg(long, value_name = "FILE", requires = "debug")]
         focus: Option<PathBuf>,
     },
     /// Calculate file-level blast radius from a path or Git changes.
+    #[command(
+        after_help = "Examples:\n  urmare impact src/payments/service.py\n  urmare impact --git-diff main --json"
+    )]
     Impact {
-        /// Changed Python files, relative to the repository root.
-        #[arg(
-            value_name = "FILE",
-            num_args = 1..,
-            required_unless_present = "git_diff",
-            conflicts_with = "git_diff"
-        )]
-        files: Vec<PathBuf>,
-        /// Analyze Python changes since the merge base with this Git revision.
-        #[arg(
-            long,
-            value_name = "BASE",
-            required_unless_present = "files",
-            conflicts_with = "files"
-        )]
-        git_diff: Option<String>,
+        #[command(flatten)]
+        changes: ChangeSource,
         /// Emit stable, schema-versioned JSON.
         #[arg(long)]
         json: bool,
-        /// Show every result in human-readable output.
+        /// Show every human-readable result; incompatible with --json.
         #[arg(long, conflicts_with = "json")]
         all: bool,
     },
     /// Select pytest-style files affected by a path or Git changes.
+    #[command(
+        after_help = "Examples:\n  urmare tests --affected src/payments/service.py\n  urmare tests --affected --git-diff main --json"
+    )]
     Tests {
         /// Select affected tests, optionally for changed Python files.
         #[arg(long, value_name = "FILE", num_args = 0.., required = true)]
@@ -84,6 +80,9 @@ enum Command {
         json: bool,
     },
     /// Explain why an affected file depends on a changed file.
+    #[command(
+        after_help = "Examples:\n  urmare why src/payments/service.py tests/test_service.py\n  urmare why src/payments/service.py tests/test_service.py --json"
+    )]
     Why {
         /// Changed dependency, relative to the repository root.
         #[arg(value_name = "CHANGED_FILE")]
@@ -95,6 +94,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Args, Debug)]
+#[group(required = true, multiple = false)]
+struct ChangeSource {
+    /// Changed Python files, relative to the repository root; incompatible with --git-diff.
+    #[arg(value_name = "FILE", num_args = 1..)]
+    files: Vec<PathBuf>,
+
+    /// Analyze Python changes since the merge base with this Git revision instead of explicit files.
+    #[arg(long, value_name = "BASE")]
+    git_diff: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -146,12 +157,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
                 }
             }
         }
-        Command::Impact {
-            files,
-            git_diff,
-            json,
-            all,
-        } => {
+        Command::Impact { changes, json, all } => {
+            let ChangeSource { files, git_diff } = changes;
             let impact = match (files.is_empty(), git_diff) {
                 (false, None) => RepositoryAnalysis::build(&cli.root)?.impact_many(&files)?,
                 (true, Some(base)) => GitDiffAnalysis::build(&cli.root, &base)?.impact()?,

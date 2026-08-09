@@ -18,6 +18,83 @@ fn urmare() -> Command {
 }
 
 #[test]
+fn top_level_help_points_to_command_specific_options() {
+    urmare()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Run 'urmare help <COMMAND>' for command-specific options.",
+        ));
+}
+
+#[test]
+fn command_help_documents_options_constraints_and_examples() {
+    urmare()
+        .args(["graph", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--debug"))
+        .stdout(predicate::str::contains("incompatible with --json"))
+        .stdout(predicate::str::contains("requires --debug"))
+        .stdout(predicate::str::contains("urmare graph --debug"));
+
+    urmare()
+        .args(["impact", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<FILE|--git-diff <BASE>>"))
+        .stdout(predicate::str::contains("incompatible with --git-diff"))
+        .stdout(predicate::str::contains(
+            "urmare impact --git-diff main --json",
+        ));
+
+    urmare()
+        .args(["tests", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains(
+            "urmare tests --affected --git-diff main --json",
+        ));
+
+    urmare()
+        .args(["why", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains(
+            "urmare why src/payments/service.py tests/test_service.py --json",
+        ));
+}
+
+#[test]
+fn version_reports_the_package_version() {
+    urmare()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::eq(format!(
+            "urmare {}\n",
+            env!("CARGO_PKG_VERSION")
+        )));
+}
+
+#[test]
+fn impact_requires_exactly_one_change_source() {
+    urmare()
+        .arg("impact")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("<FILE|--git-diff <BASE>>"))
+        .stderr(predicate::str::contains(
+            "Usage: urmare impact <FILE|--git-diff <BASE>>",
+        ))
+        .stderr(predicate::str::contains("--git-diff <BASE> <FILE>").not());
+}
+
+#[test]
 fn graph_summarizes_the_repository() {
     urmare()
         .args([
