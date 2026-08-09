@@ -4,7 +4,7 @@ use thiserror::Error;
 use urmare_graph::InvalidNodeId;
 use urmare_python::{DiscoveryError, ImportParseError, ModuleResolutionError};
 
-use crate::{ConfigError, git::GitError};
+use crate::{ConfigError, display_repository_path, git::GitError};
 
 /// Failures that can occur while building or querying repository analysis.
 #[derive(Debug, Error)]
@@ -56,7 +56,10 @@ pub enum AnalysisError {
     #[error("input file `{input}` is outside repository `{root}`")]
     InputOutsideRepository { input: PathBuf, root: PathBuf },
 
-    #[error("Python file `{0}` was not indexed in this repository")]
+    #[error(
+        "Python file `{}` was not indexed in this repository",
+        display_repository_path(.0)
+    )]
     FileNotIndexed(PathBuf),
 
     #[error("no dependency path exists from `{target}` to changed file `{changed}`")]
@@ -84,4 +87,22 @@ pub enum AnalysisError {
 
     #[error("provide either changed files or `--git-diff <base>`, not both")]
     ConflictingChangedInput,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::AnalysisError;
+
+    #[test]
+    fn repository_relative_error_paths_use_portable_separators() {
+        let path = Path::new("src").join("generated").join("client.py");
+        let error = AnalysisError::FileNotIndexed(path);
+
+        assert_eq!(
+            error.to_string(),
+            "Python file `src/generated/client.py` was not indexed in this repository"
+        );
+    }
 }

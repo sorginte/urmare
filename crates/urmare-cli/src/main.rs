@@ -17,6 +17,7 @@ const LIST_LIMIT: usize = 25;
 #[derive(Debug, Parser)]
 #[command(
     name = "urmare",
+    bin_name = "urmare",
     version,
     about = "Explain what follows from a Python code change",
     after_help = "Run 'urmare help <COMMAND>' for command-specific options."
