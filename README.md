@@ -55,8 +55,9 @@ cargo build --release
 ```
 
 The CLI binary is written to `target/release/urmare` (`urmare.exe` on Windows).
-Prebuilt distribution is planned, but release packaging is intentionally outside
-this MVP.
+Tagged releases are packaged as prebuilt macOS, Linux glibc, and Windows
+archives by the release workflow. See the [release process](docs/releasing.md)
+for the supported targets, integrity checks, and maintainer procedure.
 
 For development, commands can be run without installing the binary:
 
