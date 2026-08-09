@@ -46,7 +46,7 @@ call-graph, runtime, or framework-specific semantic understanding.
 
 ## Build
 
-Urmare is a Rust workspace and requires Rust 1.85 or newer:
+Urmare is a Rust workspace and requires Rust 1.95 or newer:
 
 ```bash
 git clone https://github.com/sorginte/urmare.git
