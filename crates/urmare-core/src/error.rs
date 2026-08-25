@@ -82,10 +82,12 @@ pub enum AnalysisError {
         dependency: PathBuf,
     },
 
-    #[error("provide one or more changed files or use `--git-diff <base>`")]
+    #[error("provide one or more changed files, `--changed`, or `--git-diff <base>`")]
     MissingChangedInput,
 
-    #[error("provide either changed files or `--git-diff <base>`, not both")]
+    #[error(
+        "provide exactly one change source: changed files, `--changed`, or `--git-diff <base>`"
+    )]
     ConflictingChangedInput,
 }
 

@@ -547,6 +547,10 @@ Example:
 ```bash
 urmare tests --affected src/payments/stripe.py
 urmare tests --affected src/payments/stripe.py src/payments/models.py
+urmare tests --affected --changed
+urmare tests --affected --changed --json
+urmare tests --affected --git-diff main
+urmare tests --affected --git-diff main --json
 ```
 
 Output:
@@ -557,7 +561,10 @@ tests/payments/test_stripe.py
 tests/api/test_checkout.py
 ```
 
-Support `--json`.
+Support `--json`. Test selection accepts exactly one change source: one or more
+explicit files, `--changed`, or `--git-diff <base>`. The Git-aware forms use
+the same working-tree, merge-base, repository-root discovery, deletion, and
+rename semantics as `urmare impact`.
 
 ---
 

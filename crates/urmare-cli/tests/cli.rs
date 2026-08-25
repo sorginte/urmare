@@ -60,6 +60,10 @@ fn command_help_documents_options_constraints_and_examples() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--changed"))
+        .stdout(predicate::str::contains(
+            "urmare tests --affected --changed",
+        ))
         .stdout(predicate::str::contains(
             "urmare tests --affected --git-diff main --json",
         ));
@@ -1110,7 +1114,7 @@ fn git_diff_impact_unions_staged_unstaged_and_untracked_changes_with_attribution
 }
 
 #[test]
-fn changed_analyzes_the_working_tree_and_discovers_root_from_a_subdirectory() {
+fn changed_commands_analyze_the_working_tree_and_discover_root_from_a_subdirectory() {
     let repository = initialized_git_repository(&[
         ("src/pkg/__init__.py", ""),
         ("src/pkg/core.py", "VALUE = 1\n"),
@@ -1151,6 +1155,40 @@ fn changed_analyzes_the_working_tree_and_discovers_root_from_a_subdirectory() {
             ]
         })
     );
+
+    urmare()
+        .current_dir(repository.path().join("src/pkg"))
+        .args(["tests", "--affected", "--changed"])
+        .assert()
+        .success()
+        .stdout("tests/test_service.py\n");
+
+    let output = urmare()
+        .current_dir(repository.path().join("src/pkg"))
+        .args(["tests", "--affected", "--changed", "--json"])
+        .output()
+        .expect("Urmare changed tests output");
+
+    assert!(
+        output.status.success(),
+        "Urmare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("valid JSON"),
+        json!({
+            "schema_version": 1,
+            "changed": ["src/pkg/core.py"],
+            "affected_tests": ["tests/test_service.py"],
+            "attributions": [
+                {
+                    "affected": "tests/test_service.py",
+                    "caused_by": ["src/pkg/core.py"]
+                }
+            ]
+        })
+    );
 }
 
 #[test]
@@ -1161,6 +1199,14 @@ fn changed_reports_when_execution_is_outside_git() {
     urmare()
         .current_dir(directory.path())
         .args(["impact", "--changed", "--json"])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains("is not a Git repository"));
+
+    urmare()
+        .current_dir(directory.path())
+        .args(["tests", "--affected", "--changed", "--json"])
         .assert()
         .code(3)
         .stdout("")
@@ -1255,7 +1301,7 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "provide one or more changed files or use `--git-diff <base>`",
+            "provide one or more changed files, `--changed`, or `--git-diff <base>`",
         ));
 
     urmare()
@@ -1296,7 +1342,38 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "provide either changed files or `--git-diff <base>`, not both",
+            "provide exactly one change source: changed files, `--changed`, or `--git-diff <base>`",
+        ));
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "tests",
+            "--affected",
+            "module.py",
+            "--changed",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "provide exactly one change source: changed files, `--changed`, or `--git-diff <base>`",
+        ));
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "tests",
+            "--affected",
+            "--changed",
+            "--git-diff",
+            "HEAD",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "provide exactly one change source: changed files, `--changed`, or `--git-diff <base>`",
         ));
 }
 
@@ -1351,6 +1428,16 @@ fn clean_git_diff_json_keeps_every_array_field_present() {
             "attributions": []
         })
     );
+
+    let changed_tests = json_output(&[
+        "--root",
+        repository.path().to_str().expect("UTF-8 repository"),
+        "tests",
+        "--affected",
+        "--changed",
+        "--json",
+    ]);
+    assert_eq!(changed_tests, tests);
 }
 
 fn json_output(arguments: &[&str]) -> Value {

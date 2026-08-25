@@ -68,12 +68,15 @@ enum Command {
     },
     /// Select pytest-style files affected by a path or Git changes.
     #[command(
-        after_help = "Examples:\n  urmare tests --affected src/payments/service.py\n  urmare tests --affected --git-diff main --json"
+        after_help = "Examples:\n  urmare tests --affected src/payments/service.py\n  urmare tests --affected --changed\n  urmare tests --affected --git-diff main --json"
     )]
     Tests {
         /// Select affected tests, optionally for changed Python files.
         #[arg(long, value_name = "FILE", num_args = 0.., required = true)]
         affected: Option<Vec<PathBuf>>,
+        /// Analyze staged, unstaged, and untracked Python changes against HEAD.
+        #[arg(long)]
+        changed: bool,
         /// Analyze Python changes since the merge base with this Git revision.
         #[arg(long, value_name = "BASE")]
         git_diff: Option<String>,
@@ -210,16 +213,19 @@ fn run(cli: Cli) -> Result<(), CliError> {
         }
         Command::Tests {
             affected,
+            changed,
             git_diff,
             json,
         } => {
-            let root = selected_root(root.as_deref(), git_diff.is_some())?;
+            let git_aware = changed || git_diff.is_some();
+            let root = selected_root(root.as_deref(), git_aware)?;
             let files = affected.unwrap_or_default();
-            let impact = match (files.is_empty(), git_diff) {
-                (false, None) => RepositoryAnalysis::build(&root)?.impact_many(&files)?,
-                (true, Some(base)) => GitDiffAnalysis::build(&root, &base)?.impact()?,
-                (true, None) => return Err(AnalysisError::MissingChangedInput.into()),
-                (false, Some(_)) => {
+            let impact = match (files.is_empty(), changed, git_diff) {
+                (false, false, None) => RepositoryAnalysis::build(&root)?.impact_many(&files)?,
+                (true, true, None) => GitDiffAnalysis::build(&root, "HEAD")?.impact()?,
+                (true, false, Some(base)) => GitDiffAnalysis::build(&root, &base)?.impact()?,
+                (true, false, None) => return Err(AnalysisError::MissingChangedInput.into()),
+                _ => {
                     return Err(AnalysisError::ConflictingChangedInput.into());
                 }
             };

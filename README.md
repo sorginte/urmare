@@ -93,6 +93,8 @@ urmare impact --git-diff main
 urmare impact --git-diff main --json
 urmare tests --affected src/example/service.py
 urmare tests --affected src/example/service.py src/example/models.py
+urmare tests --affected --changed
+urmare tests --affected --changed --json
 urmare tests --affected --git-diff main
 urmare tests --affected --git-diff main --json
 urmare why src/example/service.py tests/test_api.py
@@ -202,6 +204,8 @@ are already committed to `HEAD`:
 ```bash
 urmare impact --changed
 urmare impact --changed --json
+urmare tests --affected --changed
+urmare tests --affected --changed --json
 ```
 
 `--git-diff <base>` additionally includes committed branch changes since the
@@ -219,10 +223,10 @@ tests to remain connected without checking out the base revision. Deleted test
 files themselves are not emitted as runnable affected tests.
 
 Git-aware analysis requires the `git` executable. When `--root` is omitted,
-`impact --changed`, `impact --git-diff`, and `tests --affected --git-diff`
-discover the containing Git repository's top-level directory, so they work from
-a repository subdirectory. An explicit `--root` remains authoritative and must
-identify the Git top level.
+`impact --changed`, `impact --git-diff`, `tests --affected --changed`, and
+`tests --affected --git-diff` discover the containing Git repository's
+top-level directory, so they work from a repository subdirectory. An explicit
+`--root` remains authoritative and must identify the Git top level.
 
 ## Configuration
 
