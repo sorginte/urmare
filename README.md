@@ -30,9 +30,11 @@ hosted service or a Python interpreter.
   committed branch changes relative to an explicit Git merge base
 - union impact across multiple Git-changed files with per-result attribution
 - preserve conservative impact for deleted and renamed modules
+- explain Git-selected changes, including deleted paths and previous rename identities
+- require full validation and select every current test when root configuration changes
 - emit stable, versioned JSON for every current command
 - persist versioned parsed imports, module identities, and resolved local edges
-  for incremental repository indexing
+  for reuse across repeated complete repository builds
 - expose measured discovery, parsing, and graph-construction phases for
   reproducible performance work
 - discover `test_*.py` and `*_test.py` files plus configured test trees
@@ -99,7 +101,20 @@ urmare tests --affected --git-diff main
 urmare tests --affected --git-diff main --json
 urmare why src/example/service.py tests/test_api.py
 urmare why src/example/service.py tests/test_api.py --json
+urmare why src/example/service.py tests/test_api.py --changed
+urmare why src/example/service.py tests/test_api.py --git-diff main --json
 ```
+
+The complete command grammar is:
+
+```text
+urmare [--root PATH] graph [--json|--all] [--debug [--focus FILE]]
+urmare [--root PATH] impact <FILE...|--changed|--git-diff BASE> [--json|--all]
+urmare [--root PATH] tests --affected <FILE...|--changed|--git-diff BASE> [--json]
+urmare [--root PATH] why CHANGED_FILE AFFECTED_FILE [--changed|--git-diff BASE] [--json]
+```
+
+The alternative change sources are mutually exclusive.
 
 Or select a repository explicitly:
 
@@ -215,6 +230,7 @@ tree changes:
 ```bash
 urmare impact --git-diff origin/main
 urmare tests --affected --git-diff origin/main
+urmare why src/payments/stripe.py tests/api/test_checkout.py --git-diff origin/main
 ```
 
 Renames seed impact from both the old and new module identities. Deleted module
@@ -222,11 +238,18 @@ paths receive virtual graph nodes, allowing surviving imports and downstream
 tests to remain connected without checking out the base revision. Deleted test
 files themselves are not emitted as runnable affected tests.
 
+Git-aware `why` requires its changed path to belong to the selected Git change
+set. A deleted path and the previous path of a rename can be supplied even
+though neither currently exists. The affected path must be a currently indexed
+file. Successful explanations use the same deterministic shortest-path and
+import-provenance contract as ordinary `why`.
+
 Git-aware analysis requires the `git` executable. When `--root` is omitted,
 `impact --changed`, `impact --git-diff`, `tests --affected --changed`, and
-`tests --affected --git-diff` discover the containing Git repository's
-top-level directory, so they work from a repository subdirectory. An explicit
-`--root` remains authoritative and must identify the Git top level.
+`tests --affected --git-diff`, plus Git-aware `why`, discover the containing
+Git repository's top-level directory, so they work from a repository
+subdirectory. An explicit `--root` remains authoritative and must identify the
+Git top level.
 
 ## Configuration
 
@@ -268,6 +291,18 @@ Renames crossing an exclusion boundary are conservatively treated as an add or
 delete on the included side. Urmare's built-in ignores for `.git`, virtualenvs,
 and common Python cache directories always remain active.
 
+A Git change to the repository-root `pyproject.toml` can redefine all of these
+boundaries. Added, modified, deleted, and renamed configuration therefore make
+selective module impact unsafe. Git-aware `impact` reports `Full validation
+required`, marks module impact unavailable, and selects every test currently
+eligible under the current configuration. Git-aware `tests --affected` prints
+all of those tests and writes an explicit warning to stderr in human mode. JSON
+uses the `full_validation` object documented below. This also applies when
+`pyproject.toml` is the only changed path, so configuration changes never look
+like an empty selective result. Git-aware `why` returns an actionable
+full-validation diagnostic in this state because a selective dependency
+explanation may be invalid.
+
 ## Incremental cache
 
 Normal analysis automatically stores parsed static imports and a resolved
@@ -306,6 +341,11 @@ can populate that graph from cached identities and resolved edge lists instead
 of remapping and re-resolving every unchanged file. Git deletion and rename
 analysis retains its virtual old-path identities and applies the same
 module-set safety rule.
+
+These persistent parsed-import and graph-resolution caches are implemented
+today. True incremental discovery and in-memory graph updates are not: every
+invocation still discovers the current repository and constructs a complete
+immutable graph view.
 
 ## JSON output
 
@@ -370,6 +410,28 @@ its array is empty. Arrays and attribution entries are deterministic, and paths
 always use canonical repository-relative `/` notation. Rename analysis lists
 both old and new identities in `changed`. Explicit multi-file analysis uses the
 same deterministic union and attribution schema.
+
+When the root `pyproject.toml` changed, impact and test-selection outputs add
+this optional v1 field:
+
+```json
+{
+  "full_validation": {
+    "required": true,
+    "reason": "configuration_changed",
+    "configuration_paths": ["pyproject.toml"]
+  }
+}
+```
+
+In that state, `affected_tests` contains every currently eligible discovered
+test, `directly_affected` and `transitively_affected` are empty because module
+impact is deliberately unavailable, and `attributions` is empty rather than
+inventing import-graph attribution from configuration. The `changed` array
+continues to contain Python path identities only and can therefore be empty for
+a configuration-only change. Consumers must interpret the presence of
+`full_validation` before interpreting the selective arrays. The field is an
+additive schema-version-1 extension; it is omitted from ordinary results.
 
 Why schema version 1 preserves both canonical endpoints and the ordered
 explanation path. Its additive `steps` array records exact import evidence for
@@ -558,9 +620,10 @@ favors impact recall over minimizing false positives.
 Run the required checks before submitting changes:
 
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo +1.95.0 check --workspace --all-targets --locked
 ```
 
 Purpose-built fixture repositories live under `fixtures/python-projects/`.

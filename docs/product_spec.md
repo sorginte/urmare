@@ -294,6 +294,8 @@ A developer asks:
 
 ```bash
 urmare why src/payments/stripe.py tests/api/test_checkout.py
+urmare why src/payments/stripe.py tests/api/test_checkout.py --changed
+urmare why src/payments/stripe.py tests/api/test_checkout.py --git-diff origin/main
 ```
 
 Urmare responds:
@@ -422,6 +424,19 @@ The user should be able to inspect at least one valid dependency path.
 
 # MVP Commands
 
+The current CLI grammar is:
+
+```text
+urmare [--root PATH] graph [--json|--all] [--debug [--focus FILE]]
+urmare [--root PATH] impact <FILE...|--changed|--git-diff BASE> [--json|--all]
+urmare [--root PATH] tests --affected <FILE...|--changed|--git-diff BASE> [--json]
+urmare [--root PATH] why CHANGED_FILE AFFECTED_FILE [--changed|--git-diff BASE] [--json]
+```
+
+Each command's alternative change sources are mutually exclusive. An explicit
+`--root` is authoritative. Every Git-aware form discovers the containing Git
+top level when `--root` is omitted.
+
 ## `urmare graph`
 
 Build and inspect repository graph.
@@ -494,6 +509,8 @@ urmare impact src/payments/stripe.py
 urmare impact src/payments/stripe.py src/payments/models.py
 urmare impact --changed
 urmare impact --changed --json
+urmare impact --git-diff main
+urmare impact --git-diff main --json
 ```
 
 Output:
@@ -575,7 +592,20 @@ Example:
 ```bash
 urmare why src/payments/stripe.py tests/api/test_checkout.py
 urmare why src/payments/stripe.py tests/api/test_checkout.py --json
+urmare why src/payments/stripe.py tests/api/test_checkout.py --changed
+urmare why src/payments/stripe.py tests/api/test_checkout.py --git-diff main
+urmare why src/payments/stripe.py tests/api/test_checkout.py --git-diff main --json
 ```
+
+The non-Git form resolves both paths from the current repository exactly as
+before. `--changed` and `--git-diff <base>` are mutually exclusive and require
+the changed path to belong to that selected Git change set. Git-aware
+explanations use the same current graph and virtual identities as Git-aware
+impact, so a deleted path or the previous path of a rename remains explainable
+without existing on disk. The affected file must remain currently indexed.
+Paths may not escape the repository. Invalid bases, unselected changed paths,
+unavailable affected files, and missing dependency paths produce actionable
+analysis errors; JSON failures leave stdout empty.
 
 Output:
 
@@ -778,6 +808,24 @@ actionable configuration errors. Built-in ignores for Git metadata, common
 virtual environments, and Python tool caches remain active independently of
 configuration.
 
+The repository-root `pyproject.toml` is itself an analysis-boundary input. If
+Git reports it as added, modified, deleted, or renamed, selective impact is not
+safe because source roots, test roots, exclusions, module identities, import
+resolution, and indexed tests may all have changed. In this state:
+
+- Git-aware impact reports that full validation is required, leaves selective
+  module classifications unavailable, and selects every currently eligible
+  discovered test;
+- Git-aware affected-test selection returns that same complete current test
+  set, including configured test roots and respecting current exclusions;
+- human output explicitly reports the fallback, and JSON includes the additive
+  `full_validation` object;
+- Git-aware `why` fails with a full-validation diagnostic instead of presenting
+  a potentially invalid selective explanation.
+
+A configuration-only change must never appear to be an ordinary empty impact
+result. Configuration is not modeled as an import-graph node.
+
 ---
 
 # JSON Output
@@ -849,6 +897,26 @@ Example conceptual schema:
 }
 ```
 
+When repository-root configuration changed, impact and test-selection schema
+version 1 add this optional object:
+
+```json
+{
+  "full_validation": {
+    "required": true,
+    "reason": "configuration_changed",
+    "configuration_paths": ["pyproject.toml"]
+  }
+}
+```
+
+`affected_tests` then contains every test discovered under the current
+configuration. Selective module arrays and `attributions` are empty because
+configuration is not an import-graph node; the presence of `full_validation`
+distinguishes this state from zero impact. `changed` remains a list of Python
+identities and may be empty for a configuration-only change. This field is an
+additive version-1 extension and is omitted from ordinary output.
+
 Dependency explanations serialize canonical endpoints and the ordered path
 from affected dependent toward changed dependency. They also contain an
 additive `steps` array with the exact import evidence for every path hop:
@@ -918,7 +986,9 @@ Target warm performance:
 
 Impact traversal after graph construction should generally be measured in milliseconds.
 
-Initial indexing may take longer, but repeated runs should eventually use persistent incremental state.
+Initial indexing may take longer. Repeated runs already reuse persistent
+parsed-import and graph-resolution caches, subject to conservative
+invalidation.
 
 Do not sacrifice correctness for benchmark screenshots.
 
@@ -926,9 +996,14 @@ Do not sacrifice correctness for benchmark screenshots.
 
 # Incremental Analysis
 
-Post-MVP, Urmare should persist repository metadata.
+Urmare currently persists versioned parsed imports, module identities, complete
+import-resolution results, and resolved-edge provenance. These caches avoid
+repeating safe parsing and resolution work, but they do not yet make discovery
+or the in-memory graph incremental: every invocation still discovers the
+repository and constructs a complete immutable graph view.
 
-Instead of reparsing all files:
+True incremental discovery and in-memory graph updates remain post-MVP work.
+Instead of rebuilding the complete current view, that future design may use:
 
 ```text
 git/status changes
@@ -1200,7 +1275,6 @@ Miez is a separate project and explicitly outside Urmare's scope.
 
 Do not implement:
 
-- Git diff support
 - package installation
 - dependency resolution from package indexes
 - test framework replacement

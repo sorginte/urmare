@@ -25,6 +25,9 @@ fn top_level_help_points_to_command_specific_options() {
         .success()
         .stdout(predicate::str::contains(
             "Run 'urmare help <COMMAND>' for command-specific options.",
+        ))
+        .stdout(predicate::str::contains(
+            "every Git-aware command discovers it when omitted",
         ));
 }
 
@@ -73,8 +76,13 @@ fn command_help_documents_options_constraints_and_examples() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--changed"))
+        .stdout(predicate::str::contains("--git-diff <BASE>"))
         .stdout(predicate::str::contains(
-            "urmare why src/payments/service.py tests/test_service.py --json",
+            "urmare why src/payments/service.py tests/test_service.py --changed",
+        ))
+        .stdout(predicate::str::contains(
+            "urmare why src/payments/service.py tests/test_service.py --git-diff main --json",
         ));
 }
 
@@ -990,6 +998,112 @@ fn why_returns_nonzero_when_no_dependency_path_exists() {
 }
 
 #[test]
+fn namespace_packages_work_across_graph_impact_tests_and_why() {
+    let root = fixture("namespace-package");
+    let root = root.to_str().expect("UTF-8 fixture");
+
+    assert_eq!(
+        json_output(&["--root", root, "graph", "--json"]),
+        json!({
+            "schema_version": 1,
+            "python_files": 3,
+            "modules": 3,
+            "import_edges": 2,
+            "tests": 1,
+            "unresolved_imports": 0,
+            "unresolved_import_details": []
+        })
+    );
+    assert_eq!(
+        json_output(&[
+            "--root",
+            root,
+            "impact",
+            "src/company/payments/core.py",
+            "--json",
+        ]),
+        json!({
+            "schema_version": 1,
+            "changed": ["src/company/payments/core.py"],
+            "directly_affected": ["src/company/api/service.py"],
+            "transitively_affected": ["tests/test_service.py"],
+            "affected_tests": ["tests/test_service.py"],
+            "attributions": [
+                {
+                    "affected": "src/company/api/service.py",
+                    "caused_by": ["src/company/payments/core.py"]
+                },
+                {
+                    "affected": "tests/test_service.py",
+                    "caused_by": ["src/company/payments/core.py"]
+                }
+            ]
+        })
+    );
+    urmare()
+        .args([
+            "--root",
+            root,
+            "tests",
+            "--affected",
+            "src/company/payments/core.py",
+        ])
+        .assert()
+        .success()
+        .stdout("tests/test_service.py\n");
+    assert_eq!(
+        json_output(&[
+            "--root",
+            root,
+            "why",
+            "src/company/payments/core.py",
+            "tests/test_service.py",
+            "--json",
+        ]),
+        json!({
+            "schema_version": 1,
+            "changed": "src/company/payments/core.py",
+            "affected": "tests/test_service.py",
+            "path": [
+                "tests/test_service.py",
+                "src/company/api/service.py",
+                "src/company/payments/core.py"
+            ],
+            "steps": [
+                {
+                    "dependent": "tests/test_service.py",
+                    "dependency": "src/company/api/service.py",
+                    "imports": [{
+                        "line": 1,
+                        "column": 25,
+                        "import": {
+                            "kind": "from",
+                            "module": "company.api",
+                            "name": "service",
+                            "level": 0
+                        }
+                    }]
+                },
+                {
+                    "dependent": "src/company/api/service.py",
+                    "dependency": "src/company/payments/core.py",
+                    "imports": [{
+                        "line": 1,
+                        "column": 30,
+                        "import": {
+                            "kind": "from",
+                            "module": "company.payments",
+                            "name": "core",
+                            "level": 0
+                        }
+                    }]
+                }
+            ]
+        })
+    );
+}
+
+#[test]
 fn input_and_repository_errors_are_actionable() {
     urmare()
         .args([
@@ -1192,6 +1306,295 @@ fn changed_commands_analyze_the_working_tree_and_discover_root_from_a_subdirecto
 }
 
 #[test]
+fn git_aware_why_explains_modified_changes_in_human_and_exact_json_output() {
+    let repository = initialized_git_repository(&[
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("src/pkg/service.py", "from . import core\n"),
+        ("tests/test_service.py", "from pkg import service\n"),
+    ]);
+    fs::write(repository.path().join("src/pkg/core.py"), "VALUE = 2\n").expect("modify dependency");
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "why",
+            "src/pkg/core.py",
+            "tests/test_service.py",
+            "--changed",
+        ])
+        .assert()
+        .success()
+        .stdout(concat!(
+            "tests/test_service.py\n",
+            "  -> src/pkg/service.py\n",
+            "     via tests/test_service.py:1:17  from pkg import service\n",
+            "  -> src/pkg/core.py\n",
+            "     via src/pkg/service.py:1:15  from . import core\n",
+        ));
+
+    let output = urmare()
+        .current_dir(repository.path().join("src/pkg"))
+        .args([
+            "why",
+            "src/pkg/core.py",
+            "tests/test_service.py",
+            "--changed",
+            "--json",
+        ])
+        .output()
+        .expect("Git-aware why output");
+    assert!(
+        output.status.success(),
+        "Urmare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("valid JSON"),
+        json!({
+            "schema_version": 1,
+            "changed": "src/pkg/core.py",
+            "affected": "tests/test_service.py",
+            "path": [
+                "tests/test_service.py",
+                "src/pkg/service.py",
+                "src/pkg/core.py"
+            ],
+            "steps": [
+                {
+                    "dependent": "tests/test_service.py",
+                    "dependency": "src/pkg/service.py",
+                    "imports": [{
+                        "line": 1,
+                        "column": 17,
+                        "import": {
+                            "kind": "from",
+                            "module": "pkg",
+                            "name": "service",
+                            "level": 0
+                        }
+                    }]
+                },
+                {
+                    "dependent": "src/pkg/service.py",
+                    "dependency": "src/pkg/core.py",
+                    "imports": [{
+                        "line": 1,
+                        "column": 15,
+                        "import": {
+                            "kind": "from",
+                            "module": null,
+                            "name": "core",
+                            "level": 1
+                        }
+                    }]
+                }
+            ]
+        })
+    );
+}
+
+#[test]
+fn git_aware_why_supports_deleted_and_previous_renamed_identities() {
+    let repository = initialized_git_repository(&[
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/deleted.py", "DELETED = True\n"),
+        ("src/pkg/deleted_user.py", "from . import deleted\n"),
+        ("src/pkg/old.py", "OLD = True\n"),
+        ("src/pkg/old_user.py", "from . import old\n"),
+        ("tests/test_deleted.py", "from pkg import deleted_user\n"),
+        ("tests/test_old.py", "from pkg import old_user\n"),
+    ]);
+    fs::remove_file(repository.path().join("src/pkg/deleted.py")).expect("delete dependency");
+    git(
+        repository.path(),
+        &["mv", "src/pkg/old.py", "src/pkg/renamed.py"],
+    );
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "why",
+            "src/pkg/deleted.py",
+            "tests/test_deleted.py",
+            "--changed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  -> src/pkg/deleted.py\n"));
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "why",
+            "src/pkg/old.py",
+            "tests/test_old.py",
+            "--changed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  -> src/pkg/old.py\n"));
+}
+
+#[test]
+fn git_aware_why_uses_the_requested_merge_base() {
+    let repository = initialized_git_repository(&[
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("src/pkg/service.py", "from . import core\n"),
+        ("tests/test_service.py", "from pkg import service\n"),
+    ]);
+    git(repository.path(), &["branch", "baseline"]);
+    fs::write(repository.path().join("src/pkg/core.py"), "VALUE = 2\n").expect("modify dependency");
+    git(repository.path(), &["add", "src/pkg/core.py"]);
+    commit(repository.path(), "branch change");
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "why",
+            "src/pkg/core.py",
+            "tests/test_service.py",
+            "--git-diff",
+            "baseline",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  -> src/pkg/core.py\n"));
+}
+
+#[test]
+fn git_aware_why_reports_context_path_and_usage_errors_cleanly() {
+    let repository = initialized_git_repository(&[
+        (
+            "pyproject.toml",
+            "[tool.urmare]\nexclude = [\"ignored/**\"]\n",
+        ),
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("src/pkg/other.py", "VALUE = 1\n"),
+        ("src/pkg/service.py", "from . import core\n"),
+        ("tests/test_service.py", "from pkg import service\n"),
+        ("tests/test_other.py", "from pkg import other\n"),
+        ("ignored/test_hidden.py", "from pkg import core\n"),
+    ]);
+    fs::write(repository.path().join("src/pkg/core.py"), "VALUE = 2\n").expect("modify dependency");
+    let root = repository.path().to_str().expect("UTF-8 repository");
+
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "src/pkg/other.py",
+            "tests/test_other.py",
+            "--changed",
+            "--json",
+        ])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "changed file `src/pkg/other.py` is not part of the Git change set",
+        ));
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "src/pkg/core.py",
+            "tests/test_other.py",
+            "--changed",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("no dependency path exists"));
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "../outside.py",
+            "tests/test_service.py",
+            "--changed",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("is outside repository"));
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "src/pkg/core.py",
+            "missing.py",
+            "--changed",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("does not exist or cannot be read"));
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "src/pkg/core.py",
+            "ignored/test_hidden.py",
+            "--changed",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "Python file `ignored/test_hidden.py` was not indexed",
+        ));
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "src/pkg/core.py",
+            "tests/test_service.py",
+            "--git-diff",
+            "missing-reference",
+            "--json",
+        ])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "Git base `missing-reference` does not resolve to a commit",
+        ));
+    urmare()
+        .args([
+            "--root",
+            root,
+            "why",
+            "src/pkg/core.py",
+            "tests/test_service.py",
+            "--changed",
+            "--git-diff",
+            "HEAD",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+
+    let non_git = tempdir().expect("non-Git directory");
+    fs::write(non_git.path().join("module.py"), "VALUE = 1\n").expect("Python fixture");
+    urmare()
+        .current_dir(non_git.path())
+        .args(["why", "module.py", "module.py", "--changed", "--json"])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains("is not a Git repository"));
+}
+
+#[test]
 fn changed_reports_when_execution_is_outside_git() {
     let directory = tempdir().expect("temporary directory");
     fs::write(directory.path().join("module.py"), "VALUE = 1\n").expect("Python fixture");
@@ -1378,6 +1781,200 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
 }
 
 #[test]
+fn configuration_only_changes_select_every_current_test_deterministically() {
+    let repository = initialized_git_repository(&[
+        (
+            "pyproject.toml",
+            concat!(
+                "[tool.urmare]\n",
+                "source-roots = [\"packages/alpha/src\", \"packages/beta/src\"]\n",
+                "test-roots = [\"tests\", \"verification\"]\n",
+                "exclude = [\"tests/excluded/**\"]\n",
+            ),
+        ),
+        ("packages/alpha/src/alpha/core.py", "VALUE = 1\n"),
+        ("packages/beta/src/beta/util.py", "VALUE = 1\n"),
+        ("tests/test_alpha.py", "from alpha import core\n"),
+        ("tests/excluded/test_hidden.py", "from alpha import core\n"),
+        ("verification/beta_spec.py", "from beta import util\n"),
+    ]);
+    let configuration = repository.path().join("pyproject.toml");
+    let mut source = fs::read_to_string(&configuration).expect("read configuration");
+    source.push_str("# analysis boundary changed\n");
+    fs::write(configuration, source).expect("modify configuration");
+    let root = repository.path().to_str().expect("UTF-8 repository");
+
+    let impact = json_output(&["--root", root, "impact", "--changed", "--json"]);
+    assert_eq!(
+        impact,
+        json!({
+            "schema_version": 1,
+            "changed": [],
+            "directly_affected": [],
+            "transitively_affected": [],
+            "affected_tests": [
+                "tests/test_alpha.py",
+                "verification/beta_spec.py"
+            ],
+            "full_validation": {
+                "required": true,
+                "reason": "configuration_changed",
+                "configuration_paths": ["pyproject.toml"]
+            },
+            "attributions": []
+        })
+    );
+    assert_eq!(
+        json_output(&["--root", root, "impact", "--git-diff", "HEAD", "--json",]),
+        impact
+    );
+
+    let tests = json_output(&["--root", root, "tests", "--affected", "--changed", "--json"]);
+    assert_eq!(
+        tests,
+        json!({
+            "schema_version": 1,
+            "changed": [],
+            "affected_tests": [
+                "tests/test_alpha.py",
+                "verification/beta_spec.py"
+            ],
+            "full_validation": {
+                "required": true,
+                "reason": "configuration_changed",
+                "configuration_paths": ["pyproject.toml"]
+            },
+            "attributions": []
+        })
+    );
+    assert_eq!(
+        json_output(&[
+            "--root",
+            root,
+            "tests",
+            "--affected",
+            "--git-diff",
+            "HEAD",
+            "--json",
+        ]),
+        tests
+    );
+
+    urmare()
+        .args(["--root", root, "tests", "--affected", "--changed"])
+        .assert()
+        .success()
+        .stdout("tests/test_alpha.py\nverification/beta_spec.py\n")
+        .stderr(concat!(
+            "warning: full validation required because repository configuration changed: ",
+            "pyproject.toml; selecting all currently discovered tests\n",
+        ));
+    urmare()
+        .args(["--root", root, "impact", "--changed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Full validation required"))
+        .stdout(predicate::str::contains(
+            "Repository configuration changed: pyproject.toml",
+        ))
+        .stdout(predicate::str::contains(
+            "Affected tests                  2 (all current tests)",
+        ))
+        .stdout(predicate::str::contains(
+            "Affected modules                unavailable",
+        ));
+}
+
+#[test]
+fn added_deleted_and_renamed_configuration_trigger_full_validation() {
+    let added = initialized_git_repository(&[
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("tests/test_core.py", "from pkg import core\n"),
+    ]);
+    fs::write(
+        added.path().join("pyproject.toml"),
+        concat!(
+            "[tool.urmare]\n",
+            "source-roots = [\"src\"]\n",
+            "test-roots = [\"tests\"]\n",
+        ),
+    )
+    .expect("add configuration");
+    assert_configuration_fallback(&added);
+
+    let deleted = initialized_git_repository(&[
+        (
+            "pyproject.toml",
+            concat!(
+                "[tool.urmare]\n",
+                "source-roots = [\"src\"]\n",
+                "test-roots = [\"tests\"]\n",
+            ),
+        ),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("tests/test_core.py", "from pkg import core\n"),
+    ]);
+    fs::remove_file(deleted.path().join("pyproject.toml")).expect("delete configuration");
+    assert_configuration_fallback(&deleted);
+
+    let renamed = initialized_git_repository(&[
+        (
+            "pyproject.toml",
+            concat!(
+                "[tool.urmare]\n",
+                "source-roots = [\"src\"]\n",
+                "test-roots = [\"tests\"]\n",
+            ),
+        ),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("tests/test_core.py", "from pkg import core\n"),
+    ]);
+    git(renamed.path(), &["mv", "pyproject.toml", "project.toml"]);
+    assert_configuration_fallback(&renamed);
+}
+
+#[test]
+fn committed_configuration_change_requires_full_validation_against_branch_base() {
+    let repository = initialized_git_repository(&[
+        ("pyproject.toml", "[tool.urmare]\n"),
+        ("module.py", "VALUE = 1\n"),
+        ("tests/test_module.py", "import module\n"),
+    ]);
+    git(repository.path(), &["branch", "baseline"]);
+    fs::write(
+        repository.path().join("pyproject.toml"),
+        "[tool.urmare]\nexclude = [\"generated/**\"]\n",
+    )
+    .expect("modify configuration");
+    git(repository.path(), &["add", "pyproject.toml"]);
+    commit(repository.path(), "configuration change");
+
+    let output = json_output(&[
+        "--root",
+        repository.path().to_str().expect("UTF-8 repository"),
+        "tests",
+        "--affected",
+        "--git-diff",
+        "baseline",
+        "--json",
+    ]);
+    assert_eq!(
+        output,
+        json!({
+            "schema_version": 1,
+            "changed": [],
+            "affected_tests": ["tests/test_module.py"],
+            "full_validation": {
+                "required": true,
+                "reason": "configuration_changed",
+                "configuration_paths": ["pyproject.toml"]
+            },
+            "attributions": []
+        })
+    );
+}
+
+#[test]
 fn clean_git_diff_json_keeps_every_array_field_present() {
     let repository = initialized_git_repository(&[("module.py", "VALUE = 1\n")]);
 
@@ -1479,6 +2076,47 @@ fn initialized_git_repository(files: &[(&str, &str)]) -> TempDir {
         ],
     );
     repository
+}
+
+fn assert_configuration_fallback(repository: &TempDir) {
+    let output = json_output(&[
+        "--root",
+        repository.path().to_str().expect("UTF-8 repository"),
+        "tests",
+        "--affected",
+        "--changed",
+        "--json",
+    ]);
+    assert_eq!(
+        output,
+        json!({
+            "schema_version": 1,
+            "changed": [],
+            "affected_tests": ["tests/test_core.py"],
+            "full_validation": {
+                "required": true,
+                "reason": "configuration_changed",
+                "configuration_paths": ["pyproject.toml"]
+            },
+            "attributions": []
+        })
+    );
+}
+
+fn commit(root: &Path, message: &str) {
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=Urmare Tests",
+            "-c",
+            "user.email=urmare@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
 }
 
 fn git(root: &Path, arguments: &[&str]) {

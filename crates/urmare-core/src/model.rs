@@ -132,6 +132,8 @@ pub struct ImpactResult {
     pub affected_tests: Vec<PathBuf>,
     /// Changed-file attribution for each affected result.
     pub attributions: Vec<ImpactAttribution>,
+    /// Conservative validation state when selective graph impact is unsafe.
+    pub full_validation: Option<FullValidation>,
 }
 
 impl ImpactResult {
@@ -142,6 +144,21 @@ impl ImpactResult {
             .find(|attribution| attribution.affected == affected)
             .map_or(&[], |attribution| attribution.caused_by.as_slice())
     }
+}
+
+/// Why a Git-aware analysis must conservatively validate the full repository.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FullValidationReason {
+    /// The repository-root `pyproject.toml` changed and may redefine analysis boundaries.
+    ConfigurationChanged,
+}
+
+/// Presentation-independent details for a conservative full-validation fallback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FullValidation {
+    pub reason: FullValidationReason,
+    /// Repository-relative configuration identities that triggered the fallback.
+    pub configuration_paths: Vec<PathBuf>,
 }
 
 /// Attribution from one affected result to one or more changed files.
@@ -160,7 +177,7 @@ pub enum GitChangeKind {
     Renamed,
 }
 
-/// One Python file change discovered relative to a Git merge base.
+/// One repository analysis input changed relative to a Git merge base.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitChange {
     pub kind: GitChangeKind,

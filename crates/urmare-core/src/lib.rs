@@ -14,9 +14,10 @@ pub use error::AnalysisError;
 pub use git::{GitChangeSet, GitDiffAnalysis, GitError, discover_git_repository_root};
 pub use graph_cache::GraphCacheStats;
 pub use model::{
-    DependencyEdge, DependencyPath, DependencyStep, GitChange, GitChangeKind, GraphInspection,
-    GraphSummary, ImpactAttribution, ImpactResult, ImportProvenance, ImportResolutionStatus,
-    ImportResolutionTrace, RepositoryModule, ResolvedLocalModule, UnresolvedImport,
+    DependencyEdge, DependencyPath, DependencyStep, FullValidation, FullValidationReason,
+    GitChange, GitChangeKind, GraphInspection, GraphSummary, ImpactAttribution, ImpactResult,
+    ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, RepositoryModule,
+    ResolvedLocalModule, UnresolvedImport,
 };
 pub use repository::{AnalysisTimings, RepositoryAnalysis};
 pub use urmare_python::{SourceLocation, StaticImport};

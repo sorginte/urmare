@@ -24,7 +24,7 @@ const LIST_LIMIT: usize = 25;
     after_help = "Run 'urmare help <COMMAND>' for command-specific options."
 )]
 struct Cli {
-    /// Repository root to analyze; Git-aware impact discovers it when omitted.
+    /// Repository root to analyze; every Git-aware command discovers it when omitted.
     #[arg(long, global = true, value_name = "PATH")]
     root: Option<PathBuf>,
 
@@ -86,7 +86,7 @@ enum Command {
     },
     /// Explain why an affected file depends on a changed file.
     #[command(
-        after_help = "Examples:\n  urmare why src/payments/service.py tests/test_service.py\n  urmare why src/payments/service.py tests/test_service.py --json"
+        after_help = "Examples:\n  urmare why src/payments/service.py tests/test_service.py\n  urmare why src/payments/service.py tests/test_service.py --changed\n  urmare why src/payments/service.py tests/test_service.py --git-diff main --json"
     )]
     Why {
         /// Changed dependency, relative to the repository root.
@@ -95,6 +95,12 @@ enum Command {
         /// Affected dependent, relative to the repository root.
         #[arg(value_name = "AFFECTED_FILE")]
         affected_file: PathBuf,
+        /// Require the changed path to be among Git changes against HEAD.
+        #[arg(long, conflicts_with = "git_diff")]
+        changed: bool,
+        /// Require the changed path to be among changes since this Git merge base.
+        #[arg(long, value_name = "BASE", conflicts_with = "changed")]
+        git_diff: Option<String>,
         /// Emit stable, schema-versioned JSON.
         #[arg(long)]
         json: bool,
@@ -232,6 +238,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             if json {
                 write_json(&crate::json::tests(&impact)?)?;
             } else {
+                print_full_validation_warning(&impact);
                 for path in impact.affected_tests {
                     println!("{}", display_repository_path(&path));
                 }
@@ -240,11 +247,24 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Why {
             changed_file,
             affected_file,
+            changed,
+            git_diff,
             json,
         } => {
-            let root = selected_root(root.as_deref(), false)?;
-            let repository = RepositoryAnalysis::build(&root)?;
-            let explanation = repository.why(&changed_file, &affected_file)?;
+            let git_aware = changed || git_diff.is_some();
+            let root = selected_root(root.as_deref(), git_aware)?;
+            let explanation = match (changed, git_diff) {
+                (false, None) => {
+                    RepositoryAnalysis::build(&root)?.why(&changed_file, &affected_file)?
+                }
+                (true, None) => {
+                    GitDiffAnalysis::build(&root, "HEAD")?.why(&changed_file, &affected_file)?
+                }
+                (false, Some(base)) => {
+                    GitDiffAnalysis::build(&root, &base)?.why(&changed_file, &affected_file)?
+                }
+                (true, Some(_)) => return Err(AnalysisError::ConflictingChangedInput.into()),
+            };
             if json {
                 write_json(&crate::json::why(&explanation)?)?;
             } else {
@@ -439,6 +459,29 @@ fn print_impact(impact: &ImpactResult, show_all: bool) {
     let tests: Vec<_> = impact.affected_tests.iter().map(PathBuf::as_path).collect();
 
     println!("Impact analysis");
+    if let Some(full_validation) = &impact.full_validation {
+        println!("\nFull validation required");
+        println!(
+            "  Repository configuration changed: {}",
+            full_validation
+                .configuration_paths
+                .iter()
+                .map(|path| display_repository_path(path))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!("  Selective module impact is unavailable.");
+        println!("  All currently discovered tests are selected.");
+        print_path_group("Changed Python files", &changed, impact, false, show_all);
+        println!("\nSummary");
+        println!("  Affected modules                unavailable");
+        println!(
+            "  Affected tests                  {} (all current tests)",
+            tests.len()
+        );
+        print_path_group("Affected tests", &tests, impact, false, show_all);
+        return;
+    }
     print_path_group("Changed", &changed, impact, false, show_all);
 
     println!("\nSummary");
@@ -467,6 +510,21 @@ fn print_impact(impact: &ImpactResult, show_all: bool) {
         show_all,
     );
     print_path_group("Affected tests", &tests, impact, true, show_all);
+}
+
+fn print_full_validation_warning(impact: &ImpactResult) {
+    let Some(full_validation) = &impact.full_validation else {
+        return;
+    };
+    eprintln!(
+        "warning: full validation required because repository configuration changed: {}; selecting all currently discovered tests",
+        full_validation
+            .configuration_paths
+            .iter()
+            .map(|path| display_repository_path(path))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
 fn print_path_group(

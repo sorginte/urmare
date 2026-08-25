@@ -6,9 +6,9 @@
 
 use serde::Serialize;
 use urmare_core::{
-    DependencyEdge, DependencyPath, GraphInspection, GraphSummary, ImpactResult, ImportProvenance,
-    ImportResolutionStatus, ImportResolutionTrace, StaticImport, UnresolvedImport,
-    display_repository_path,
+    DependencyEdge, DependencyPath, FullValidationReason, GraphInspection, GraphSummary,
+    ImpactResult, ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, StaticImport,
+    UnresolvedImport, display_repository_path,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -91,6 +91,8 @@ struct ImpactOutput {
     directly_affected: Vec<String>,
     transitively_affected: Vec<String>,
     affected_tests: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full_validation: Option<FullValidationOutput>,
     attributions: Vec<AttributionOutput>,
 }
 
@@ -99,7 +101,16 @@ struct TestSelectionOutput {
     schema_version: u32,
     changed: Vec<String>,
     affected_tests: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full_validation: Option<FullValidationOutput>,
     attributions: Vec<AttributionOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct FullValidationOutput {
+    required: bool,
+    reason: &'static str,
+    configuration_paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -158,6 +169,7 @@ pub fn impact(impact: &ImpactResult) -> Result<String, serde_json::Error> {
         directly_affected: paths(&impact.directly_affected),
         transitively_affected: paths(&impact.transitively_affected),
         affected_tests: paths(&impact.affected_tests),
+        full_validation: full_validation(impact),
         attributions: impact
             .attributions
             .iter()
@@ -175,14 +187,19 @@ pub fn tests(impact: &ImpactResult) -> Result<String, serde_json::Error> {
         schema_version: SCHEMA_VERSION,
         changed: paths(&impact.changed),
         affected_tests: paths(&impact.affected_tests),
-        attributions: impact
-            .affected_tests
-            .iter()
-            .map(|affected| AttributionOutput {
-                affected: display_repository_path(affected),
-                caused_by: paths(impact.causes_for(affected)),
-            })
-            .collect(),
+        full_validation: full_validation(impact),
+        attributions: if impact.full_validation.is_some() {
+            Vec::new()
+        } else {
+            impact
+                .affected_tests
+                .iter()
+                .map(|affected| AttributionOutput {
+                    affected: display_repository_path(affected),
+                    caused_by: paths(impact.causes_for(affected)),
+                })
+                .collect()
+        },
     })
 }
 
@@ -203,6 +220,19 @@ pub fn why(explanation: &DependencyPath) -> Result<String, serde_json::Error> {
             })
             .collect(),
     })
+}
+
+fn full_validation(impact: &ImpactResult) -> Option<FullValidationOutput> {
+    impact
+        .full_validation
+        .as_ref()
+        .map(|validation| FullValidationOutput {
+            required: true,
+            reason: match validation.reason {
+                FullValidationReason::ConfigurationChanged => "configuration_changed",
+            },
+            configuration_paths: paths(&validation.configuration_paths),
+        })
 }
 
 fn graph_inspection(inspection: &GraphInspection) -> GraphInspectionOutput {
