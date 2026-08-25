@@ -26,8 +26,8 @@ hosted service or a Python interpreter.
 - inspect module mappings, dependency edges, and per-module neighbor counts
 - calculate direct and transitive reverse dependencies
 - union explicit multi-file impact with per-result attribution
-- detect committed, staged, unstaged, and untracked Python changes relative to
-  a Git merge base
+- detect staged, unstaged, and untracked Python changes against `HEAD`, or add
+  committed branch changes relative to an explicit Git merge base
 - union impact across multiple Git-changed files with per-result attribution
 - preserve conservative impact for deleted and renamed modules
 - emit stable, versioned JSON for every current command
@@ -87,6 +87,8 @@ urmare graph --debug --json
 urmare impact src/example/service.py
 urmare impact src/example/service.py src/example/models.py
 urmare impact src/example/service.py --all
+urmare impact --changed
+urmare impact --changed --json
 urmare impact --git-diff main
 urmare impact --git-diff main --json
 urmare tests --affected src/example/service.py
@@ -190,11 +192,21 @@ normalizes and deduplicates the inputs, unions their reverse dependency
 closures, and records every changed file that caused each affected result. If
 any input is missing, outside the repository, or not indexed, the command fails
 with an actionable diagnostic instead of returning a partial result. Explicit
-files and `--git-diff` are mutually exclusive.
+files, `--changed`, and `--git-diff` are mutually exclusive.
 
-Git-aware analysis compares the working tree with the merge base of the
-provided revision and `HEAD`. It includes committed branch changes, staged and
-unstaged changes, and untracked files that are not ignored by Git:
+`--changed` analyzes the current Git working tree against `HEAD`. It includes
+staged, unstaged, and untracked Python files that are not ignored by Git,
+including added, deleted, and renamed paths. It does not include changes that
+are already committed to `HEAD`:
+
+```bash
+urmare impact --changed
+urmare impact --changed --json
+```
+
+`--git-diff <base>` additionally includes committed branch changes since the
+merge base of the provided revision and `HEAD`, together with the same working
+tree changes:
 
 ```bash
 urmare impact --git-diff origin/main
@@ -206,9 +218,11 @@ paths receive virtual graph nodes, allowing surviving imports and downstream
 tests to remain connected without checking out the base revision. Deleted test
 files themselves are not emitted as runnable affected tests.
 
-Git-aware analysis requires the `git` executable, and the selected root
-(explicit or `.` by default) must currently be the Git repository's top-level
-directory.
+Git-aware analysis requires the `git` executable. When `--root` is omitted,
+`impact --changed`, `impact --git-diff`, and `tests --affected --git-diff`
+discover the containing Git repository's top-level directory, so they work from
+a repository subdirectory. An explicit `--root` remains authoritative and must
+identify the Git top level.
 
 ## Configuration
 
@@ -423,6 +437,22 @@ each adjacent path pair:
 
 Incompatible schema changes require a new `schema_version`. Additive fields may
 be introduced within a version, so consumers should ignore unknown fields.
+
+## Exit codes
+
+Urmare uses a small stable exit-code contract suitable for scripts and coding
+agents:
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | Analysis completed successfully, including an empty impact result. |
+| `1` | Urmare encountered an unexpected internal, serialization, or output failure. |
+| `2` | CLI arguments or `[tool.urmare]` configuration are invalid. |
+| `3` | The requested repository, Git state, Python source, or dependency path could not be analyzed. |
+
+Blast-radius size never changes the exit code. With `--json`, successful output
+is JSON on stdout. Every failure leaves stdout empty, writes one actionable
+diagnostic to stderr, and returns the appropriate non-zero code.
 
 Graph edges use this orientation:
 

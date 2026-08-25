@@ -219,6 +219,39 @@ impl GitDiffAnalysis {
     }
 }
 
+/// Finds the top level of the Git repository containing `start`.
+///
+/// The returned path is canonical and suitable for repository analysis. This
+/// keeps Git-aware callers independent of their current working directory.
+pub fn discover_git_repository_root(start: &Path) -> Result<PathBuf, GitError> {
+    let start = start
+        .canonicalize()
+        .map_err(|source| GitError::RootAccess {
+            path: start.to_path_buf(),
+            source,
+        })?;
+    let output = run_git(
+        &start,
+        &[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
+        "finding the repository root",
+    )?;
+    if !output.status.success() {
+        return Err(GitError::NotRepository {
+            root: start,
+            details: stderr_details(&output),
+        });
+    }
+
+    let git_root = output_text(&output.stdout, "finding the repository root", "root path")?;
+    let git_root = PathBuf::from(git_root.trim());
+    git_root
+        .canonicalize()
+        .map_err(|source| GitError::RootAccess {
+            path: git_root,
+            source,
+        })
+}
+
 fn exclude_change(change: GitChange, excluder: &PathExcluder) -> Option<GitChange> {
     if change.kind != GitChangeKind::Renamed {
         return (!excluder.is_excluded(&change.path)).then_some(change);
@@ -245,30 +278,11 @@ fn exclude_change(change: GitChange, excluder: &PathExcluder) -> Option<GitChang
 }
 
 fn verify_repository_root(root: &Path) -> Result<(), GitError> {
-    let output = run_git(
-        root,
-        &[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
-        "finding the repository root",
-    )?;
-    if !output.status.success() {
-        return Err(GitError::NotRepository {
-            root: root.to_path_buf(),
-            details: stderr_details(&output),
-        });
-    }
-
-    let git_root = output_text(&output.stdout, "finding the repository root", "root path")?;
-    let git_root = PathBuf::from(git_root.trim());
-    let canonical_git_root = git_root
-        .canonicalize()
-        .map_err(|source| GitError::RootAccess {
-            path: git_root,
-            source,
-        })?;
-    if canonical_git_root != root {
+    let git_root = discover_git_repository_root(root)?;
+    if git_root != root {
         return Err(GitError::RootMismatch {
             selected: root.to_path_buf(),
-            git_root: canonical_git_root,
+            git_root,
         });
     }
     Ok(())
@@ -484,7 +498,10 @@ mod tests {
 
     use tempfile::{TempDir, tempdir};
 
-    use super::{GitChange, GitChangeKind, GitChangeSet, GitDiffAnalysis, GitError};
+    use super::{
+        GitChange, GitChangeKind, GitChangeSet, GitDiffAnalysis, GitError,
+        discover_git_repository_root,
+    };
     use urmare_python::PathExcluder;
 
     #[test]
@@ -731,6 +748,19 @@ mod tests {
         let error = GitChangeSet::discover(repository.path(), "missing-reference")
             .expect_err("invalid base is rejected");
         assert!(matches!(error, GitError::InvalidBase { .. }));
+    }
+
+    #[test]
+    fn discovers_the_repository_root_from_a_subdirectory() {
+        let repository = initialized_repository(&[("src/pkg/module.py", "VALUE = 1\n")]);
+        let subdirectory = repository.path().join("src/pkg");
+
+        let discovered = discover_git_repository_root(&subdirectory).expect("Git repository root");
+
+        assert_eq!(
+            discovered,
+            repository.path().canonicalize().expect("canonical root")
+        );
     }
 
     fn initialized_repository(files: &[(&str, &str)]) -> TempDir {

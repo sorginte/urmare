@@ -492,6 +492,8 @@ Example:
 ```bash
 urmare impact src/payments/stripe.py
 urmare impact src/payments/stripe.py src/payments/models.py
+urmare impact --changed
+urmare impact --changed --json
 ```
 
 Output:
@@ -526,8 +528,15 @@ unless `--all` is provided. `--json` remains complete and machine-readable.
 
 Explicit impact accepts one or more changed files. Urmare normalizes duplicate
 or equivalent paths, unions their reverse dependency closures, and retains all
-changed-file attribution for each result. Explicit paths and `--git-diff` are
-mutually exclusive.
+changed-file attribution for each result. Explicit paths, `--changed`, and
+`--git-diff` are mutually exclusive.
+
+`--changed` compares the working tree to `HEAD` and includes staged, unstaged,
+and untracked non-ignored Python paths, including added, deleted, and renamed
+files. `--git-diff <base>` additionally includes committed branch changes since
+the merge base of `<base>` and `HEAD`. When no explicit `--root` is supplied,
+Git-aware impact discovers the containing Git repository top level so it can be
+invoked from a subdirectory.
 
 ---
 
@@ -871,6 +880,20 @@ additive `steps` array with the exact import evidence for every path hop:
 Schema stability becomes increasingly important once CI/agent integrations exist.
 
 All serialized file paths should use the canonical repository-relative normalized representation rather than machine-specific absolute paths.
+
+## Exit codes
+
+The CLI exit-code contract is:
+
+```text
+0  successful analysis, including an empty result
+1  unexpected internal, serialization, or output failure
+2  invalid CLI usage or tool.urmare configuration
+3  requested repository, Git state, Python input, or dependency path could not be analyzed
+```
+
+Blast-radius size is output, not command status. JSON failures follow the same
+codes, leave stdout empty, and write an actionable diagnostic to stderr.
 
 ---
 

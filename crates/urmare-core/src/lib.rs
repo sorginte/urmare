@@ -11,7 +11,7 @@ mod repository;
 pub use cache::CacheStats;
 pub use config::{ConfigError, RepositoryConfig};
 pub use error::AnalysisError;
-pub use git::{GitChangeSet, GitDiffAnalysis, GitError};
+pub use git::{GitChangeSet, GitDiffAnalysis, GitError, discover_git_repository_root};
 pub use graph_cache::GraphCacheStats;
 pub use model::{
     DependencyEdge, DependencyPath, DependencyStep, GitChange, GitChangeKind, GraphInspection,

@@ -44,8 +44,13 @@ fn command_help_documents_options_constraints_and_examples() {
         .args(["impact", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("<FILE|--git-diff <BASE>>"))
-        .stdout(predicate::str::contains("incompatible with --git-diff"))
+        .stdout(predicate::str::contains(
+            "<FILE|--changed|--git-diff <BASE>>",
+        ))
+        .stdout(predicate::str::contains("urmare impact --changed --json"))
+        .stdout(predicate::str::contains(
+            "incompatible with --changed and --git-diff",
+        ))
         .stdout(predicate::str::contains(
             "urmare impact --git-diff main --json",
         ));
@@ -87,9 +92,11 @@ fn impact_requires_exactly_one_change_source() {
         .arg("impact")
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("<FILE|--git-diff <BASE>>"))
         .stderr(predicate::str::contains(
-            "Usage: urmare impact <FILE|--git-diff <BASE>>",
+            "<FILE|--changed|--git-diff <BASE>>",
+        ))
+        .stderr(predicate::str::contains(
+            "Usage: urmare impact <FILE|--changed|--git-diff <BASE>>",
         ))
         .stderr(predicate::str::contains("--git-diff <BASE> <FILE>").not());
 }
@@ -677,7 +684,7 @@ fn configured_test_roots_and_excludes_apply_across_cli_commands() {
     urmare()
         .args(["--root", root, "impact", "src/generated/client.py"])
         .assert()
-        .code(2)
+        .code(3)
         .stderr(predicate::str::contains(
             "Python file `src/generated/client.py` was not indexed",
         ));
@@ -759,7 +766,7 @@ fn configuration_errors_are_actionable() {
             "graph",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stderr(predicate::str::contains("module `pkg.module` maps to both"))
         .stderr(predicate::str::contains("tool.urmare.source-roots"));
 }
@@ -960,7 +967,7 @@ fn why_returns_nonzero_when_no_dependency_path_exists() {
             "tests/analytics/test_reporting.py",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stderr(predicate::str::contains("no dependency path exists"));
 
     urmare()
@@ -973,7 +980,7 @@ fn why_returns_nonzero_when_no_dependency_path_exists() {
             "--json",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stdout("")
         .stderr(predicate::str::contains("no dependency path exists"));
 }
@@ -988,7 +995,7 @@ fn input_and_repository_errors_are_actionable() {
             "missing.py",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stderr(predicate::str::contains(
             "input file `missing.py` does not exist",
         ));
@@ -1001,7 +1008,7 @@ fn input_and_repository_errors_are_actionable() {
             "--json",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stdout("")
         .stderr(predicate::str::contains(
             "unable to parse Python source `broken.py`",
@@ -1014,7 +1021,7 @@ fn input_and_repository_errors_are_actionable() {
             "graph",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stderr(predicate::str::contains("no Python files were found"));
 }
 
@@ -1103,6 +1110,64 @@ fn git_diff_impact_unions_staged_unstaged_and_untracked_changes_with_attribution
 }
 
 #[test]
+fn changed_analyzes_the_working_tree_and_discovers_root_from_a_subdirectory() {
+    let repository = initialized_git_repository(&[
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("src/pkg/service.py", "from . import core\n"),
+        ("tests/test_service.py", "from pkg import service\n"),
+    ]);
+    fs::write(repository.path().join("src/pkg/core.py"), "VALUE = 2\n").expect("unstaged change");
+
+    let output = urmare()
+        .current_dir(repository.path().join("src/pkg"))
+        .args(["impact", "--changed", "--json"])
+        .output()
+        .expect("Urmare changed output");
+
+    assert!(
+        output.status.success(),
+        "Urmare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).expect("valid JSON"),
+        json!({
+            "schema_version": 1,
+            "changed": ["src/pkg/core.py"],
+            "directly_affected": ["src/pkg/service.py"],
+            "transitively_affected": ["tests/test_service.py"],
+            "affected_tests": ["tests/test_service.py"],
+            "attributions": [
+                {
+                    "affected": "src/pkg/service.py",
+                    "caused_by": ["src/pkg/core.py"]
+                },
+                {
+                    "affected": "tests/test_service.py",
+                    "caused_by": ["src/pkg/core.py"]
+                }
+            ]
+        })
+    );
+}
+
+#[test]
+fn changed_reports_when_execution_is_outside_git() {
+    let directory = tempdir().expect("temporary directory");
+    fs::write(directory.path().join("module.py"), "VALUE = 1\n").expect("Python fixture");
+
+    urmare()
+        .current_dir(directory.path())
+        .args(["impact", "--changed", "--json"])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains("is not a Git repository"));
+}
+
+#[test]
 fn git_diff_keeps_deleted_and_renamed_modules_explainable() {
     let repository = initialized_git_repository(&[
         ("src/pkg/__init__.py", ""),
@@ -1174,7 +1239,7 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
             "--json",
         ])
         .assert()
-        .code(2)
+        .code(3)
         .stdout("")
         .stderr(predicate::str::contains(
             "Git base `missing-reference` does not resolve to a commit",
@@ -1201,6 +1266,18 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
             "module.py",
             "--git-diff",
             "HEAD",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "impact",
+            "module.py",
+            "--changed",
         ])
         .assert()
         .code(2)
@@ -1246,6 +1323,15 @@ fn clean_git_diff_json_keeps_every_array_field_present() {
             "attributions": []
         })
     );
+
+    let changed = json_output(&[
+        "--root",
+        repository.path().to_str().expect("UTF-8 repository"),
+        "impact",
+        "--changed",
+        "--json",
+    ]);
+    assert_eq!(changed, impact);
 
     let tests = json_output(&[
         "--root",

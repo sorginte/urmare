@@ -9,7 +9,8 @@ use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 use urmare_core::{
     AnalysisError, DependencyPath, GitDiffAnalysis, GraphInspection, ImpactResult,
-    ImportResolutionStatus, RepositoryAnalysis, display_repository_path,
+    ImportResolutionStatus, RepositoryAnalysis, discover_git_repository_root,
+    display_repository_path,
 };
 
 const LIST_LIMIT: usize = 25;
@@ -23,9 +24,9 @@ const LIST_LIMIT: usize = 25;
     after_help = "Run 'urmare help <COMMAND>' for command-specific options."
 )]
 struct Cli {
-    /// Repository root to analyze.
-    #[arg(long, global = true, default_value = ".", value_name = "PATH")]
-    root: PathBuf,
+    /// Repository root to analyze; Git-aware impact discovers it when omitted.
+    #[arg(long, global = true, value_name = "PATH")]
+    root: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -53,7 +54,7 @@ enum Command {
     },
     /// Calculate file-level blast radius from a path or Git changes.
     #[command(
-        after_help = "Examples:\n  urmare impact src/payments/service.py\n  urmare impact --git-diff main --json"
+        after_help = "Examples:\n  urmare impact src/payments/service.py\n  urmare impact --changed --json\n  urmare impact --git-diff main --json"
     )]
     Impact {
         #[command(flatten)]
@@ -100,9 +101,13 @@ enum Command {
 #[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
 struct ChangeSource {
-    /// Changed Python files, relative to the repository root; incompatible with --git-diff.
+    /// Changed Python files, relative to the repository root; incompatible with --changed and --git-diff.
     #[arg(value_name = "FILE", num_args = 1..)]
     files: Vec<PathBuf>,
+
+    /// Analyze staged, unstaged, and untracked Python changes against HEAD.
+    #[arg(long)]
+    changed: bool,
 
     /// Analyze Python changes since the merge base with this Git revision instead of explicit files.
     #[arg(long, value_name = "BASE")]
@@ -121,26 +126,48 @@ enum CliError {
     Output(#[from] io::Error),
 }
 
+impl CliError {
+    fn exit_code(&self) -> u8 {
+        match self {
+            Self::Json(_) | Self::Output(_) => 1,
+            Self::Analysis(
+                AnalysisError::InvalidGraph(_)
+                | AnalysisError::MissingNodeMetadata(_)
+                | AnalysisError::MissingModule(_)
+                | AnalysisError::MissingEdgeProvenance { .. },
+            ) => 1,
+            Self::Analysis(
+                AnalysisError::Config(_)
+                | AnalysisError::MissingChangedInput
+                | AnalysisError::ConflictingChangedInput,
+            ) => 2,
+            Self::Analysis(_) => 3,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::from(2)
+            ExitCode::from(error.exit_code())
         }
     }
 }
 
 fn run(cli: Cli) -> Result<(), CliError> {
-    match cli.command {
+    let Cli { root, command } = cli;
+    match command {
         Command::Graph {
             json,
             all,
             debug,
             focus,
         } => {
-            let repository = RepositoryAnalysis::build(&cli.root)?;
+            let root = selected_root(root.as_deref(), false)?;
+            let repository = RepositoryAnalysis::build(&root)?;
             let summary = repository.summary();
             let inspection = debug
                 .then(|| repository.graph_inspection(focus.as_deref()))
@@ -159,12 +186,19 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Command::Impact { changes, json, all } => {
-            let ChangeSource { files, git_diff } = changes;
-            let impact = match (files.is_empty(), git_diff) {
-                (false, None) => RepositoryAnalysis::build(&cli.root)?.impact_many(&files)?,
-                (true, Some(base)) => GitDiffAnalysis::build(&cli.root, &base)?.impact()?,
-                (true, None) => return Err(AnalysisError::MissingChangedInput.into()),
-                (false, Some(_)) => {
+            let ChangeSource {
+                files,
+                changed,
+                git_diff,
+            } = changes;
+            let git_aware = changed || git_diff.is_some();
+            let root = selected_root(root.as_deref(), git_aware)?;
+            let impact = match (files.is_empty(), changed, git_diff) {
+                (false, false, None) => RepositoryAnalysis::build(&root)?.impact_many(&files)?,
+                (true, true, None) => GitDiffAnalysis::build(&root, "HEAD")?.impact()?,
+                (true, false, Some(base)) => GitDiffAnalysis::build(&root, &base)?.impact()?,
+                (true, false, None) => return Err(AnalysisError::MissingChangedInput.into()),
+                _ => {
                     return Err(AnalysisError::ConflictingChangedInput.into());
                 }
             };
@@ -179,10 +213,11 @@ fn run(cli: Cli) -> Result<(), CliError> {
             git_diff,
             json,
         } => {
+            let root = selected_root(root.as_deref(), git_diff.is_some())?;
             let files = affected.unwrap_or_default();
             let impact = match (files.is_empty(), git_diff) {
-                (false, None) => RepositoryAnalysis::build(&cli.root)?.impact_many(&files)?,
-                (true, Some(base)) => GitDiffAnalysis::build(&cli.root, &base)?.impact()?,
+                (false, None) => RepositoryAnalysis::build(&root)?.impact_many(&files)?,
+                (true, Some(base)) => GitDiffAnalysis::build(&root, &base)?.impact()?,
                 (true, None) => return Err(AnalysisError::MissingChangedInput.into()),
                 (false, Some(_)) => {
                     return Err(AnalysisError::ConflictingChangedInput.into());
@@ -201,7 +236,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
             affected_file,
             json,
         } => {
-            let repository = RepositoryAnalysis::build(&cli.root)?;
+            let root = selected_root(root.as_deref(), false)?;
+            let repository = RepositoryAnalysis::build(&root)?;
             let explanation = repository.why(&changed_file, &affected_file)?;
             if json {
                 write_json(&crate::json::why(&explanation)?)?;
@@ -212,6 +248,17 @@ fn run(cli: Cli) -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+fn selected_root(root: Option<&Path>, discover_git: bool) -> Result<PathBuf, CliError> {
+    let selected = root.unwrap_or_else(|| Path::new("."));
+    if discover_git && root.is_none() {
+        discover_git_repository_root(selected)
+            .map_err(AnalysisError::from)
+            .map_err(CliError::from)
+    } else {
+        Ok(selected.to_path_buf())
+    }
 }
 
 fn write_json(output: &str) -> Result<(), io::Error> {
@@ -471,5 +518,25 @@ fn print_dependency_path(explanation: &DependencyPath) {
                 provenance.import,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::path::PathBuf;
+
+    use super::{AnalysisError, CliError};
+
+    #[test]
+    fn exit_codes_distinguish_internal_usage_and_analysis_failures() {
+        let internal = CliError::Output(io::Error::other("output failed"));
+        let usage = CliError::Analysis(AnalysisError::MissingChangedInput);
+        let analysis =
+            CliError::Analysis(AnalysisError::FileNotIndexed(PathBuf::from("missing.py")));
+
+        assert_eq!(internal.exit_code(), 1);
+        assert_eq!(usage.exit_code(), 2);
+        assert_eq!(analysis.exit_code(), 3);
     }
 }
