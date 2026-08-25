@@ -1886,6 +1886,37 @@ fn configuration_only_changes_select_every_current_test_deterministically() {
 }
 
 #[test]
+fn git_aware_why_rejects_configuration_changed_repositories_in_json_mode() {
+    let repository = initialized_git_repository(&[
+        ("pyproject.toml", "[tool.urmare]\n"),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("tests/test_core.py", "from pkg import core\n"),
+    ]);
+    fs::write(
+        repository.path().join("pyproject.toml"),
+        "[tool.urmare]\nexclude = [\"generated/**\"]\n",
+    )
+    .expect("modify configuration");
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "why",
+            "src/pkg/core.py",
+            "tests/test_core.py",
+            "--changed",
+            "--json",
+        ])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "Git-aware dependency explanations are unavailable because repository configuration changed; run full validation",
+        ));
+}
+
+#[test]
 fn added_deleted_and_renamed_configuration_trigger_full_validation() {
     let added = initialized_git_repository(&[
         ("src/pkg/core.py", "VALUE = 1\n"),

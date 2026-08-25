@@ -60,7 +60,7 @@ pub enum GitError {
     UnsafePath(PathBuf),
 }
 
-/// Python changes between a Git merge base and the current working tree.
+/// Python and repository-root configuration changes relative to a Git merge base.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitChangeSet {
     base: String,
@@ -70,7 +70,7 @@ pub struct GitChangeSet {
 }
 
 impl GitChangeSet {
-    /// Discovers committed, staged, unstaged, and untracked Python changes.
+    /// Discovers committed, staged, unstaged, and untracked analysis-input changes.
     pub fn discover(root: &Path, base: &str) -> Result<Self, GitError> {
         let root = root.canonicalize().map_err(|source| GitError::RootAccess {
             path: root.to_path_buf(),
@@ -245,7 +245,7 @@ impl GitDiffAnalysis {
         })
     }
 
-    /// Returns the discovered Python change set.
+    /// Returns the discovered Python and repository-configuration change set.
     pub fn changes(&self) -> &GitChangeSet {
         &self.changes
     }
