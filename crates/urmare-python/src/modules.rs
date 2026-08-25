@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::StaticImport;
 
 /// A repository Python file with its importable module identity.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PythonFile {
     /// Canonical repository-relative path.
     pub path: PathBuf,
@@ -250,62 +250,80 @@ impl LocalImportResolver {
         importer: &PythonFile,
         import: &StaticImport,
     ) -> LocalImportResolution {
-        let mut candidates = BTreeSet::new();
-        let mut resolved = BTreeSet::new();
+        resolve_local_import_with(importer, import, |module| self.modules.contains(module))
+    }
+}
 
-        match import {
-            StaticImport::Import { module } => {
-                self.add_prefixes(module, &mut candidates, &mut resolved);
-            }
-            StaticImport::From {
-                module,
-                name,
-                level,
-            } => {
-                let Some(base) = absolute_from_base(importer, module.as_deref(), *level) else {
-                    return LocalImportResolution {
-                        candidate_modules: Vec::new(),
-                        resolved_modules: Vec::new(),
-                        failure: Some(ImportResolutionFailure::RelativeBeyondTopLevel),
-                    };
-                };
-                self.add_prefixes(&base, &mut candidates, &mut resolved);
+/// Resolves one static import through a caller-provided local-module lookup.
+///
+/// Full repository construction and persistent incremental updates share this
+/// function so candidate generation, relative-import handling, and prefix
+/// semantics cannot drift between the two paths.
+pub fn resolve_local_import_with(
+    importer: &PythonFile,
+    import: &StaticImport,
+    mut is_local: impl FnMut(&str) -> bool,
+) -> LocalImportResolution {
+    let mut candidates = BTreeSet::new();
+    let mut resolved = BTreeSet::new();
 
-                if name != "*" {
-                    let candidate = if base.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{base}.{name}")
-                    };
-                    self.add_prefixes(&candidate, &mut candidates, &mut resolved);
+    match import {
+        StaticImport::Import { module } => {
+            add_prefixes(module, &mut candidates, |candidate| {
+                if is_local(candidate) {
+                    resolved.insert(candidate.to_owned());
                 }
-            }
+            });
         }
+        StaticImport::From {
+            module,
+            name,
+            level,
+        } => {
+            let Some(base) = absolute_from_base(importer, module.as_deref(), *level) else {
+                return LocalImportResolution {
+                    candidate_modules: Vec::new(),
+                    resolved_modules: Vec::new(),
+                    failure: Some(ImportResolutionFailure::RelativeBeyondTopLevel),
+                };
+            };
+            add_prefixes(&base, &mut candidates, |candidate| {
+                if is_local(candidate) {
+                    resolved.insert(candidate.to_owned());
+                }
+            });
 
-        LocalImportResolution {
-            candidate_modules: candidates.into_iter().collect(),
-            resolved_modules: resolved.into_iter().collect(),
-            failure: None,
+            if name != "*" {
+                let candidate = if base.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{base}.{name}")
+                };
+                add_prefixes(&candidate, &mut candidates, |candidate| {
+                    if is_local(candidate) {
+                        resolved.insert(candidate.to_owned());
+                    }
+                });
+            }
         }
     }
 
-    fn add_prefixes(
-        &self,
-        module: &str,
-        candidates: &mut BTreeSet<String>,
-        resolved: &mut BTreeSet<String>,
-    ) {
-        let mut prefix = String::new();
-        for component in module.split('.').filter(|component| !component.is_empty()) {
-            if !prefix.is_empty() {
-                prefix.push('.');
-            }
-            prefix.push_str(component);
-            candidates.insert(prefix.clone());
-            if self.modules.contains(&prefix) {
-                resolved.insert(prefix.clone());
-            }
+    LocalImportResolution {
+        candidate_modules: candidates.into_iter().collect(),
+        resolved_modules: resolved.into_iter().collect(),
+        failure: None,
+    }
+}
+
+fn add_prefixes(module: &str, candidates: &mut BTreeSet<String>, mut observe: impl FnMut(&str)) {
+    let mut prefix = String::new();
+    for component in module.split('.').filter(|component| !component.is_empty()) {
+        if !prefix.is_empty() {
+            prefix.push('.');
         }
+        prefix.push_str(component);
+        candidates.insert(prefix.clone());
+        observe(&prefix);
     }
 }
 

@@ -5,7 +5,9 @@ mod config;
 mod error;
 mod git;
 mod graph_cache;
+mod index;
 mod model;
+#[path = "incremental_repository.rs"]
 mod repository;
 
 pub use cache::CacheStats;
@@ -13,6 +15,7 @@ pub use config::{ConfigError, RepositoryConfig};
 pub use error::AnalysisError;
 pub use git::{GitChangeSet, GitDiffAnalysis, GitError, discover_git_repository_root};
 pub use graph_cache::GraphCacheStats;
+pub use index::{IndexBuildKind, IndexFallbackReason, IndexTimings, IndexWorkStats};
 pub use model::{
     DependencyEdge, DependencyPath, DependencyStep, FullValidation, FullValidationReason,
     GitChange, GitChangeKind, GraphInspection, GraphSummary, ImpactAttribution, ImpactResult,

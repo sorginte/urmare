@@ -16,6 +16,13 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     ".ruff_cache",
 ];
 
+/// Work performed while validating a complete repository inventory.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiscoveryStats {
+    pub directories_inspected: usize,
+    pub entries_inspected: usize,
+}
+
 /// Errors encountered while discovering repository Python files.
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
@@ -119,6 +126,14 @@ pub fn discover_python_files_with_excluder(
     root: &Path,
     excluder: &PathExcluder,
 ) -> Result<Vec<PathBuf>, DiscoveryError> {
+    discover_python_files_profiled(root, excluder).map(|(files, _)| files)
+}
+
+/// Discovers Python files and reports the amount of inventory work performed.
+pub fn discover_python_files_profiled(
+    root: &Path,
+    excluder: &PathExcluder,
+) -> Result<(Vec<PathBuf>, DiscoveryStats), DiscoveryError> {
     let metadata = root
         .metadata()
         .map_err(|source| DiscoveryError::RootAccess {
@@ -136,6 +151,7 @@ pub fn discover_python_files_with_excluder(
             source,
         })?;
     let mut files = Vec::new();
+    let mut stats = DiscoveryStats::default();
 
     for entry in WalkDir::new(&root)
         .follow_links(false)
@@ -146,6 +162,10 @@ pub fn discover_python_files_with_excluder(
             root: root.clone(),
             source,
         })?;
+        stats.entries_inspected += 1;
+        if entry.file_type().is_dir() {
+            stats.directories_inspected += 1;
+        }
         if !entry.file_type().is_file() || entry.path().extension() != Some(OsStr::new("py")) {
             continue;
         }
@@ -162,7 +182,20 @@ pub fn discover_python_files_with_excluder(
     }
 
     files.sort();
-    Ok(files)
+    Ok((files, stats))
+}
+
+/// Returns whether a repository-relative Python path is eligible for ordinary
+/// discovery, without performing filesystem access.
+pub fn is_discoverable_python_path(path: &Path, excluder: &PathExcluder) -> bool {
+    path.extension() == Some(OsStr::new("py"))
+        && !path.components().any(|component| {
+            let component = component.as_os_str();
+            IGNORED_DIRECTORIES
+                .iter()
+                .any(|ignored| component == OsStr::new(ignored))
+        })
+        && !excluder.is_excluded(path)
 }
 
 fn should_visit(entry: &DirEntry, root: &Path, excluder: &PathExcluder) -> bool {

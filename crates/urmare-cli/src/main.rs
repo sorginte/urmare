@@ -143,7 +143,8 @@ impl CliError {
                 AnalysisError::InvalidGraph(_)
                 | AnalysisError::MissingNodeMetadata(_)
                 | AnalysisError::MissingModule(_)
-                | AnalysisError::MissingEdgeProvenance { .. },
+                | AnalysisError::MissingEdgeProvenance { .. }
+                | AnalysisError::IndexUnavailable(_),
             ) => 1,
             Self::Analysis(
                 AnalysisError::Config(_)
@@ -178,17 +179,18 @@ fn run(cli: Cli) -> Result<(), CliError> {
             let root = selected_root(root.as_deref(), false)?;
             let repository = RepositoryAnalysis::build(&root)?;
             let summary = repository.summary();
+            let unresolved_imports = repository.unresolved_imports()?;
             let inspection = debug
                 .then(|| repository.graph_inspection(focus.as_deref()))
                 .transpose()?;
             if json {
                 write_json(&crate::json::graph(
                     &summary,
-                    repository.unresolved_imports(),
+                    &unresolved_imports,
                     inspection.as_ref(),
                 )?)?;
             } else {
-                print_graph(&summary, repository.unresolved_imports(), all);
+                print_graph(&summary, &unresolved_imports, all);
                 if let Some(inspection) = &inspection {
                     print_graph_inspection(inspection, all);
                 }

@@ -93,6 +93,9 @@ pub enum AnalysisError {
         dependency: PathBuf,
     },
 
+    #[error("persistent repository index is unavailable: {0}")]
+    IndexUnavailable(String),
+
     #[error("provide one or more changed files, `--changed`, or `--git-diff <base>`")]
     MissingChangedInput,
 

@@ -19,6 +19,7 @@ harness = false
 [dependencies]
 blake3.workspace = true
 directories.workspace = true
+redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
