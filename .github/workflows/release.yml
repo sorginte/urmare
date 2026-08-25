@@ -204,6 +204,7 @@ jobs:
           pattern: urmare-${{ github.ref_name }}-*
           path: dist
           merge-multiple: true
+          skip-decompress: true
 
       - name: Verify archives and generate checksums
         shell: bash
