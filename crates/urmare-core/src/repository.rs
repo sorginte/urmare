@@ -521,6 +521,81 @@ impl RepositoryAnalysis {
     pub fn why(&self, changed: &Path, target: &Path) -> Result<DependencyPath, AnalysisError> {
         let (changed_path, changed_node) = self.resolve_input(changed)?;
         let (target_path, target_node) = self.resolve_input(target)?;
+        self.why_resolved(changed_path, changed_node, target_path, target_node)
+    }
+
+    /// Explains a path from a normalized repository identity that may not exist on disk.
+    pub(crate) fn why_repository_path(
+        &self,
+        changed: &Path,
+        target: &Path,
+    ) -> Result<DependencyPath, AnalysisError> {
+        let changed_node = self
+            .nodes_by_path
+            .get(changed)
+            .copied()
+            .ok_or_else(|| AnalysisError::FileNotIndexed(changed.to_path_buf()))?;
+        let (target_path, target_node) = self.resolve_input(target)?;
+        self.why_resolved(
+            changed.to_path_buf(),
+            changed_node,
+            target_path,
+            target_node,
+        )
+    }
+
+    /// Normalizes an input without requiring the represented path to exist.
+    pub(crate) fn normalize_repository_path(&self, input: &Path) -> Result<PathBuf, AnalysisError> {
+        let relative = if input.is_absolute() {
+            input
+                .strip_prefix(&self.root)
+                .map_err(|_| AnalysisError::InputOutsideRepository {
+                    input: input.to_path_buf(),
+                    root: self.root.clone(),
+                })?
+        } else {
+            input
+        };
+        let mut normalized = PathBuf::new();
+        for component in relative.components() {
+            match component {
+                std::path::Component::Normal(part) => normalized.push(part),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_) => {
+                    return Err(AnalysisError::InputOutsideRepository {
+                        input: input.to_path_buf(),
+                        root: self.root.clone(),
+                    });
+                }
+            }
+        }
+        if normalized.as_os_str().is_empty() {
+            return Err(AnalysisError::InputOutsideRepository {
+                input: input.to_path_buf(),
+                root: self.root.clone(),
+            });
+        }
+        Ok(normalized)
+    }
+
+    /// Returns every currently present pytest-style file in deterministic order.
+    pub(crate) fn current_tests(&self) -> Result<Vec<PathBuf>, AnalysisError> {
+        self.sorted_paths(self.present_nodes.iter().copied().filter(|node| {
+            self.files
+                .get(node.index())
+                .is_some_and(|file| file.is_test)
+        }))
+    }
+
+    fn why_resolved(
+        &self,
+        changed_path: PathBuf,
+        changed_node: NodeId,
+        target_path: PathBuf,
+        target_node: NodeId,
+    ) -> Result<DependencyPath, AnalysisError> {
         let Some(path) = self.graph.dependency_path(target_node, changed_node)? else {
             return Err(AnalysisError::NoDependencyPath {
                 changed: changed_path,
@@ -675,6 +750,7 @@ impl RepositoryAnalysis {
             transitively_affected,
             affected_tests,
             attributions,
+            full_validation: None,
         })
     }
 

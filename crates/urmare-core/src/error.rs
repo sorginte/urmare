@@ -65,6 +65,17 @@ pub enum AnalysisError {
     #[error("no dependency path exists from `{target}` to changed file `{changed}`")]
     NoDependencyPath { changed: PathBuf, target: PathBuf },
 
+    #[error(
+        "changed file `{}` is not part of the Git change set selected against base `{base}`",
+        display_repository_path(.path)
+    )]
+    GitChangedPathNotSelected { path: PathBuf, base: String },
+
+    #[error(
+        "Git-aware dependency explanations are unavailable because repository configuration changed; run full validation"
+    )]
+    ConfigurationChanged,
+
     #[error("repository graph is internally inconsistent: {0}")]
     InvalidGraph(#[from] InvalidNodeId),
 
