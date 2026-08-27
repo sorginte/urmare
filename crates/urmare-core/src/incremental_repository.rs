@@ -11,12 +11,16 @@ use crate::{
     cache::{CacheLocation, content_hash},
     display_repository_path,
     index::{
-        BuiltIndex, IndexRead, IndexStore, IndexTimings, IndexWorkStats, StoredFile,
-        StoredResolution, build_index, build_index_with_boundary_paths, provenance,
+        BuiltIndex, IndexRead, IndexReadProfile, IndexStore, IndexTimings, IndexWorkStats,
+        StoredFile, StoredResolution, build_index, build_index_with_boundary_paths, provenance,
     },
 };
 
-/// A query-facing view of one persistent or in-memory repository index.
+/// A query-facing view of one persistent or recovery in-memory repository index.
+///
+/// Impact and explanation queries follow stored relationships directly. The
+/// complete file table is scanned only for operations whose output is itself
+/// complete, such as unscoped debug inspection.
 pub struct RepositoryAnalysis {
     root: PathBuf,
     source_roots: Vec<PathBuf>,
@@ -52,6 +56,27 @@ impl AnalysisTimings {
             + self.index_timings.delta_detection
             + self.index_timings.update
             + self.index_timings.persistence
+    }
+}
+
+/// Work and wall-clock timing for one query over an existing repository index.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QueryProfile {
+    /// Time spent opening the persistent index and its read transaction.
+    pub index_load: Duration,
+    /// Time spent evaluating the requested graph query.
+    pub query: Duration,
+    /// Time spent rebuilding an uncached recovery view after a query-time
+    /// storage failure. This is normally zero.
+    pub fallback_rebuild: Duration,
+    /// Persistent records read by the query. Complete graph/debug operations
+    /// naturally read the complete file table; narrow impact queries do not.
+    pub index_records_read: usize,
+}
+
+impl QueryProfile {
+    pub fn total(self) -> Duration {
+        self.index_load + self.query + self.fallback_rebuild
     }
 }
 
@@ -234,6 +259,14 @@ impl RepositoryAnalysis {
         self.impact_many(&[changed.to_path_buf()])
     }
 
+    /// Calculates impact and reports the bounded index work performed by the query.
+    pub fn impact_profiled(
+        &self,
+        changed: &Path,
+    ) -> Result<(ImpactResult, QueryProfile), AnalysisError> {
+        self.impact_many_profiled(&[changed.to_path_buf()])
+    }
+
     pub fn impact_many(&self, changed: &[PathBuf]) -> Result<ImpactResult, AnalysisError> {
         if changed.is_empty() {
             return Err(AnalysisError::MissingChangedInput);
@@ -243,6 +276,21 @@ impl RepositoryAnalysis {
             paths.push(self.resolve_input_path(path)?);
         }
         self.impact_repository_paths(&paths)
+    }
+
+    /// Calculates multi-file impact with query-side index instrumentation.
+    pub fn impact_many_profiled(
+        &self,
+        changed: &[PathBuf],
+    ) -> Result<(ImpactResult, QueryProfile), AnalysisError> {
+        if changed.is_empty() {
+            return Err(AnalysisError::MissingChangedInput);
+        }
+        let paths = changed
+            .iter()
+            .map(|path| self.canonical_input_path(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.with_reader_profiled(|reader| self.impact_paths(reader, &paths))
     }
 
     pub(crate) fn impact_repository_paths(
@@ -274,6 +322,17 @@ impl RepositoryAnalysis {
         let changed = self.resolve_input_path(changed)?;
         let target = self.resolve_input_path(target)?;
         self.why_repository_path(&changed, &target)
+    }
+
+    /// Explains a dependency path with query-side index instrumentation.
+    pub fn why_profiled(
+        &self,
+        changed: &Path,
+        target: &Path,
+    ) -> Result<(DependencyPath, QueryProfile), AnalysisError> {
+        let changed = self.canonical_input_path(changed)?;
+        let target = self.canonical_input_path(target)?;
+        self.with_reader_profiled(|reader| self.why_paths(reader, &changed, &target))
     }
 
     pub(crate) fn why_repository_path(
@@ -507,6 +566,14 @@ impl RepositoryAnalysis {
     }
 
     fn resolve_input_path(&self, input: &Path) -> Result<PathBuf, AnalysisError> {
+        let path = self.canonical_input_path(input)?;
+        self.with_reader(|reader| {
+            self.file(reader, &display_repository_path(&path))?;
+            Ok(path.clone())
+        })
+    }
+
+    fn canonical_input_path(&self, input: &Path) -> Result<PathBuf, AnalysisError> {
         let candidate = if input.is_absolute() {
             input.to_path_buf()
         } else {
@@ -521,11 +588,7 @@ impl RepositoryAnalysis {
                 root: self.root.clone(),
             }
         })?;
-        let path = relative.to_path_buf();
-        self.with_reader(|reader| {
-            self.file(reader, &display_repository_path(&path))?;
-            Ok(path.clone())
-        })
+        Ok(relative.to_path_buf())
     }
 
     fn file(&self, reader: &dyn IndexRead, path: &str) -> Result<StoredFile, AnalysisError> {
@@ -587,6 +650,23 @@ impl RepositoryAnalysis {
             Err(AnalysisError::IndexUnavailable(_)) => {
                 let fallback = build_index(&self.root, CacheLocation::Disabled)?;
                 fallback.store.read(operation)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn with_reader_profiled<T>(
+        &self,
+        mut operation: impl FnMut(&dyn IndexRead) -> Result<T, AnalysisError>,
+    ) -> Result<(T, QueryProfile), AnalysisError> {
+        match self.store.read_profiled(&mut operation) {
+            Ok((value, profile)) => Ok((value, query_profile(profile, Duration::ZERO))),
+            Err(AnalysisError::IndexUnavailable(_)) => {
+                let fallback_started = std::time::Instant::now();
+                let fallback = build_index(&self.root, CacheLocation::Disabled)?;
+                let fallback_rebuild = fallback_started.elapsed();
+                let (value, profile) = fallback.store.read_profiled(operation)?;
+                Ok((value, query_profile(profile, fallback_rebuild)))
             }
             Err(error) => Err(error),
         }
@@ -748,6 +828,15 @@ fn legacy_timings(built: &BuiltIndex) -> AnalysisTimings {
         },
         index_work: built.work,
         index_timings: built.timings,
+    }
+}
+
+fn query_profile(profile: IndexReadProfile, fallback_rebuild: Duration) -> QueryProfile {
+    QueryProfile {
+        index_load: profile.load,
+        query: profile.query,
+        fallback_rebuild,
+        index_records_read: profile.records_read,
     }
 }
 

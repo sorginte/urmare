@@ -66,6 +66,21 @@ fn clean_index_reuse_and_non_import_edit_have_bounded_work() {
     assert_eq!(second_timings.index_work.index_records_written, 0);
     assert_eq!(first.summary(), second.summary());
 
+    let narrow = PathBuf::from(format!(
+        "src/generated/module_{:05}.py",
+        fixture.source_modules - 1
+    ));
+    let (narrow_impact, narrow_profile) = second
+        .impact_profiled(&narrow)
+        .expect("profiled narrow impact");
+    assert!(narrow_impact.directly_affected.is_empty());
+    assert!(narrow_profile.index_records_read <= 4);
+    let (explanation, why_profile) = second
+        .why_profiled(&fixture.changed_file, &narrow)
+        .expect("profiled explanation");
+    assert_eq!(explanation.path.len(), fixture.source_modules);
+    assert!(why_profile.index_records_read <= fixture.source_modules * 2 + 2);
+
     let changed = root.path().join("src/generated/module_00042.py");
     let mut source = std::fs::read_to_string(&changed).expect("changed source");
     source.push_str("\n# content-only edit\n");

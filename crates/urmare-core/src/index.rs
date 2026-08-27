@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -22,74 +23,114 @@ use crate::{
     display_repository_path,
 };
 
-const INDEX_SCHEMA_VERSION: u32 = 1;
-const INDEX_FILE_NAME: &str = "repository-index-v1.redb";
+const INDEX_SCHEMA_VERSION: u32 = 3;
+const INDEX_FILE_NAME: &str = "repository-index.redb";
 const RESOLVER_COMPATIBILITY_TAG: &str = "python-local-import-resolution-v4";
 const META_KEY: &str = "current";
 
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("metadata");
 const FILES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const MODULES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("modules");
-const REVERSE_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("reverse");
-const CANDIDATES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("candidates");
+const REVERSE_TABLE: TableDefinition<&str, u8> = TableDefinition::new("reverse");
+const CANDIDATES_TABLE: TableDefinition<&str, u8> = TableDefinition::new("candidates");
 
 /// How the current repository view was obtained.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum IndexBuildKind {
+    /// Complete repository discovery, parsing, resolution, and construction.
     #[default]
     Full,
+    /// A bounded delta was applied to a compatible committed generation.
     Incremental,
+    /// The compatible committed generation already represented this state.
     Reused,
 }
 
 /// Why a persistent index could not be updated incrementally.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IndexFallbackReason {
+    /// Persistent indexing was explicitly disabled by the caller.
     CacheDisabled,
+    /// No previous index existed for this canonical repository.
     MissingIndex,
+    /// The schema, parser, resolver, or repository identity was incompatible.
     IncompatibleIndex,
+    /// Relevant repository-root configuration changed.
     ConfigurationChanged,
+    /// Source-root inference or mapping changed outside a safe bounded update.
     SourceRootRemapped,
+    /// No portable bounded-delta proof is currently available without Git.
     NonGitRepository,
+    /// Git could not provide a complete safe delta.
     GitStateUnavailable,
+    /// Another process currently owns the persistent writer handle.
     IndexLocked,
+    /// Persistent state was truncated, corrupt, or otherwise unreadable.
     IndexCorrupt,
+    /// Persistent storage failed and analysis continued with an uncached view.
     StorageFailure,
 }
 
 /// Bounded-work counters for index construction, validation, and mutation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct IndexWorkStats {
+    /// Directories visited during complete discovery.
     pub directories_inspected: usize,
+    /// Filesystem or Git inventory entries considered for this generation.
     pub inventory_entries_inspected: usize,
+    /// Candidate Python files statted.
     pub files_statted: usize,
+    /// Python source files read.
     pub files_read: usize,
+    /// Python source files content-hashed.
     pub files_hashed: usize,
+    /// Python source files parsed.
     pub files_parsed: usize,
+    /// Module identities added to the current tree.
     pub modules_added: usize,
+    /// Module identities removed from the current tree.
     pub modules_removed: usize,
+    /// Existing paths whose module identity changed.
     pub modules_remapped: usize,
+    /// Changed candidate paths that retained their module identity.
     pub modules_reused: usize,
+    /// Importer records passed through local import resolution.
     pub importers_reresolved: usize,
+    /// Current-tree file records added.
     pub records_added: usize,
+    /// Current-tree file records removed.
     pub records_removed: usize,
+    /// Forward dependency relationships added.
     pub forward_edges_added: usize,
+    /// Forward dependency relationships removed.
     pub forward_edges_removed: usize,
+    /// Reverse dependent relationships added.
     pub reverse_edges_added: usize,
+    /// Reverse dependent relationships removed.
     pub reverse_edges_removed: usize,
+    /// Persistent point records read while planning the update.
     pub index_records_read: usize,
+    /// Persistent point records inserted, replaced, or removed.
     pub index_records_written: usize,
+    /// Serialized key/value bytes inserted or replaced; removals count as
+    /// records but add no serialized bytes.
     pub bytes_written: u64,
+    /// Construction mode used for this repository view.
     pub build_kind: IndexBuildKind,
+    /// Conservative reason for a complete or uncached fallback, when present.
     pub fallback_reason: Option<IndexFallbackReason>,
 }
 
 /// Timings for the persistent-index pipeline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct IndexTimings {
+    /// Time spent opening the embedded index.
     pub load: Duration,
+    /// Time spent deriving the candidate repository delta.
     pub delta_detection: Duration,
+    /// Time spent constructing or updating index records in memory.
     pub update: Duration,
+    /// Time spent committing the transactional generation.
     pub persistence: Duration,
 }
 
@@ -241,6 +282,8 @@ struct GitBaseline {
     head: Option<String>,
     working_paths: Vec<String>,
     ignored_python_paths: Vec<String>,
+    #[serde(default)]
+    index_entries_inspected: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -334,6 +377,56 @@ pub(crate) trait IndexRead {
     fn candidate_importers(&self, module: &str) -> Result<Vec<String>, String>;
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct IndexReadProfile {
+    pub records_read: usize,
+    pub load: Duration,
+    pub query: Duration,
+}
+
+struct ProfiledReader<'reader> {
+    inner: &'reader dyn IndexRead,
+    records_read: Cell<usize>,
+}
+
+impl ProfiledReader<'_> {
+    fn record(&self, count: usize) {
+        self.records_read.set(self.records_read.get() + count);
+    }
+}
+
+impl IndexRead for ProfiledReader<'_> {
+    fn file(&self, path: &str) -> Result<Option<StoredFile>, String> {
+        let file = self.inner.file(path)?;
+        self.record(usize::from(file.is_some()));
+        Ok(file)
+    }
+
+    fn files(&self) -> Result<Vec<StoredFile>, String> {
+        let files = self.inner.files()?;
+        self.record(files.len());
+        Ok(files)
+    }
+
+    fn module_path(&self, module: &str) -> Result<Option<String>, String> {
+        let path = self.inner.module_path(module)?;
+        self.record(usize::from(path.is_some()));
+        Ok(path)
+    }
+
+    fn reverse_dependents(&self, path: &str) -> Result<Vec<String>, String> {
+        let dependents = self.inner.reverse_dependents(path)?;
+        self.record(dependents.len());
+        Ok(dependents)
+    }
+
+    fn candidate_importers(&self, module: &str) -> Result<Vec<String>, String> {
+        let importers = self.inner.candidate_importers(module)?;
+        self.record(importers.len());
+        Ok(importers)
+    }
+}
+
 impl IndexRead for MemoryIndex {
     fn file(&self, path: &str) -> Result<Option<StoredFile>, String> {
         Ok(self.files.get(path).cloned())
@@ -382,11 +475,11 @@ impl IndexRead for PersistentReader<'_> {
     }
 
     fn reverse_dependents(&self, path: &str) -> Result<Vec<String>, String> {
-        Ok(read_json(self.transaction, REVERSE_TABLE, path)?.unwrap_or_default())
+        read_relationships(self.transaction, REVERSE_TABLE, path)
     }
 
     fn candidate_importers(&self, module: &str) -> Result<Vec<String>, String> {
-        Ok(read_json(self.transaction, CANDIDATES_TABLE, module)?.unwrap_or_default())
+        read_relationships(self.transaction, CANDIDATES_TABLE, module)
     }
 }
 
@@ -406,6 +499,49 @@ impl IndexStore {
             }
         }
     }
+
+    pub fn read_profiled<T>(
+        &self,
+        operation: impl FnOnce(&dyn IndexRead) -> Result<T, AnalysisError>,
+    ) -> Result<(T, IndexReadProfile), AnalysisError> {
+        let load_started = Instant::now();
+        match self {
+            Self::Memory(index) => {
+                let load = load_started.elapsed();
+                profiled_operation(index, load, operation)
+            }
+            Self::Persistent(path) => {
+                let database = ReadOnlyDatabase::open(path).map_err(index_query_error)?;
+                let transaction = database.begin_read().map_err(index_query_error)?;
+                let load = load_started.elapsed();
+                let reader = PersistentReader {
+                    transaction: &transaction,
+                };
+                profiled_operation(&reader, load, operation)
+            }
+        }
+    }
+}
+
+fn profiled_operation<T>(
+    reader: &dyn IndexRead,
+    load: Duration,
+    operation: impl FnOnce(&dyn IndexRead) -> Result<T, AnalysisError>,
+) -> Result<(T, IndexReadProfile), AnalysisError> {
+    let reader = ProfiledReader {
+        inner: reader,
+        records_read: Cell::new(0),
+    };
+    let query_started = Instant::now();
+    let value = operation(&reader)?;
+    Ok((
+        value,
+        IndexReadProfile {
+            records_read: reader.records_read.get(),
+            load,
+            query: query_started.elapsed(),
+        },
+    ))
 }
 
 pub(crate) fn build_index(
@@ -457,6 +593,7 @@ pub(crate) fn build_index_with_boundary_paths(
     }
 
     let load_started = Instant::now();
+    let index_existed = index_path.exists();
     let database = match Database::create(&index_path) {
         Ok(database) => database,
         Err(DatabaseError::DatabaseAlreadyOpen) => {
@@ -470,7 +607,22 @@ pub(crate) fn build_index_with_boundary_paths(
         Err(_) => {
             let _ = fs::remove_file(&index_path);
             match Database::create(&index_path) {
-                Ok(database) => database,
+                Ok(database) => {
+                    return rebuild_persistent(
+                        database,
+                        index_path,
+                        &root,
+                        &configuration,
+                        boundary_paths,
+                        &configuration_fingerprint,
+                        &repository_identity,
+                        IndexFallbackReason::IndexCorrupt,
+                        IndexTimings {
+                            load: load_started.elapsed(),
+                            ..IndexTimings::default()
+                        },
+                    );
+                }
                 Err(_) => {
                     return full_memory_fallback(
                         &root,
@@ -486,6 +638,20 @@ pub(crate) fn build_index_with_boundary_paths(
         load: load_started.elapsed(),
         ..IndexTimings::default()
     };
+
+    if !index_existed {
+        return rebuild_persistent(
+            database,
+            index_path,
+            &root,
+            &configuration,
+            boundary_paths,
+            &configuration_fingerprint,
+            &repository_identity,
+            IndexFallbackReason::MissingIndex,
+            timings,
+        );
+    }
 
     let metadata = match read_metadata(&database) {
         Ok(metadata) => metadata,
@@ -632,14 +798,17 @@ pub(crate) fn build_index_with_boundary_paths(
 
     if update.has_writes() {
         let persistence_started = Instant::now();
-        if persist_update(&database, &update).is_err() {
-            drop(database);
-            return full_memory_fallback(
-                &root,
-                &configuration,
-                boundary_paths,
-                IndexFallbackReason::StorageFailure,
-            );
+        match persist_update(&database, &update) {
+            Ok(bytes_written) => work.bytes_written = bytes_written,
+            Err(_) => {
+                drop(database);
+                return full_memory_fallback(
+                    &root,
+                    &configuration,
+                    boundary_paths,
+                    IndexFallbackReason::StorageFailure,
+                );
+            }
         }
         timings.persistence = persistence_started.elapsed();
         work.build_kind = IndexBuildKind::Incremental;
@@ -699,6 +868,10 @@ fn rebuild_persistent(
     let (index, source_roots) = build_full(root, configuration, boundary_paths, &mut work)?;
     timings.update = update_started.elapsed();
     let summary = index.summary();
+    let git_baseline = capture_git_baseline(root).ok();
+    work.inventory_entries_inspected += git_baseline
+        .as_ref()
+        .map_or(0, |baseline| baseline.index_entries_inspected);
     let metadata = IndexMetadata {
         schema_version: INDEX_SCHEMA_VERSION,
         parser: IMPORT_ANALYSIS_CACHE_TAG.to_owned(),
@@ -712,12 +885,16 @@ fn rebuild_persistent(
             .map(|path| display_repository_path(path))
             .collect(),
         summary: StoredSummary::from(&summary),
-        git_baseline: capture_git_baseline(root).ok(),
+        git_baseline,
     };
     let persistence_started = Instant::now();
     let persisted = persist_full(&database, &index, &metadata, &mut work).is_ok();
     timings.persistence = persistence_started.elapsed();
     drop(database);
+    if !persisted {
+        work.index_records_written = 0;
+        work.bytes_written = 0;
+    }
     Ok(BuiltIndex {
         store: if persisted {
             IndexStore::Persistent(index_path)
@@ -811,7 +988,6 @@ fn build_full(
     work.records_added += summary.python_files;
     work.forward_edges_added += summary.import_edges;
     work.reverse_edges_added += summary.import_edges;
-    work.index_records_written += summary.python_files;
     Ok((index, source_roots))
 }
 
@@ -895,6 +1071,27 @@ fn read_all_json<T: for<'de> Deserialize<'de>>(
     Ok(values)
 }
 
+fn read_relationships(
+    transaction: &ReadTransaction,
+    table_definition: TableDefinition<&str, u8>,
+    owner: &str,
+) -> Result<Vec<String>, String> {
+    let table = transaction
+        .open_table(table_definition)
+        .map_err(string_error)?;
+    let prefix = relationship_prefix(owner);
+    let mut related = Vec::new();
+    for entry in table.range(prefix.as_str()..).map_err(string_error)? {
+        let (key, _) = entry.map_err(string_error)?;
+        let key = key.value();
+        let Some(value) = key.strip_prefix(&prefix) else {
+            break;
+        };
+        related.push(value.to_owned());
+    }
+    Ok(related)
+}
+
 fn persist_full(
     database: &Database,
     index: &MemoryIndex,
@@ -916,6 +1113,7 @@ fn persist_full(
         let mut table = transaction.open_table(FILES_TABLE).map_err(string_error)?;
         for (path, file) in &index.files {
             work.bytes_written += insert_json(&mut table, path, file)?;
+            work.index_records_written += 1;
         }
     }
     {
@@ -924,6 +1122,7 @@ fn persist_full(
             .map_err(string_error)?;
         for (module, path) in &index.modules {
             work.bytes_written += insert_json(&mut table, module, path)?;
+            work.index_records_written += 1;
         }
     }
     {
@@ -931,8 +1130,10 @@ fn persist_full(
             .open_table(REVERSE_TABLE)
             .map_err(string_error)?;
         for (path, dependents) in &index.reverse {
-            let dependents: Vec<_> = dependents.iter().cloned().collect();
-            work.bytes_written += insert_json(&mut table, path, &dependents)?;
+            for dependent in dependents {
+                work.bytes_written += insert_relationship(&mut table, path, dependent)?;
+                work.index_records_written += 1;
+            }
         }
     }
     {
@@ -940,8 +1141,10 @@ fn persist_full(
             .open_table(CANDIDATES_TABLE)
             .map_err(string_error)?;
         for (candidate, importers) in &index.candidates {
-            let importers: Vec<_> = importers.iter().cloned().collect();
-            work.bytes_written += insert_json(&mut table, candidate, &importers)?;
+            for importer in importers {
+                work.bytes_written += insert_relationship(&mut table, candidate, importer)?;
+                work.index_records_written += 1;
+            }
         }
     }
     transaction.commit().map_err(string_error)
@@ -955,6 +1158,24 @@ fn insert_json<T: Serialize>(
     let bytes = serde_json::to_vec(value).map_err(string_error)?;
     table.insert(key, bytes.as_slice()).map_err(string_error)?;
     Ok((key.len() + bytes.len()) as u64)
+}
+
+fn insert_relationship(
+    table: &mut redb::Table<'_, &str, u8>,
+    owner: &str,
+    related: &str,
+) -> Result<u64, String> {
+    let key = relationship_key(owner, related);
+    table.insert(key.as_str(), 0).map_err(string_error)?;
+    Ok((key.len() + 1) as u64)
+}
+
+fn relationship_prefix(owner: &str) -> String {
+    format!("{owner}\0")
+}
+
+fn relationship_key(owner: &str, related: &str) -> String {
+    format!("{}{related}", relationship_prefix(owner))
 }
 
 fn configuration_fingerprint(configuration: &RepositoryConfig) -> String {
@@ -1019,7 +1240,10 @@ enum DeltaError {
 
 fn detect_delta(root: &Path, previous: Option<&GitBaseline>) -> Result<DetectedDelta, DeltaError> {
     let Some(previous) = previous else {
-        return Err(DeltaError::Git);
+        return match capture_git_baseline(root) {
+            Err(DeltaError::NonGit) => Err(DeltaError::NonGit),
+            _ => Err(DeltaError::Git),
+        };
     };
     let current = capture_git_baseline(root)?;
     let mut paths = BTreeSet::new();
@@ -1027,7 +1251,7 @@ fn detect_delta(root: &Path, previous: Option<&GitBaseline>) -> Result<DetectedD
     paths.extend(current.working_paths.iter().cloned());
     paths.extend(previous.ignored_python_paths.iter().cloned());
     paths.extend(current.ignored_python_paths.iter().cloned());
-    let mut inventory_entries = paths.len();
+    let mut inventory_entries = paths.len() + current.index_entries_inspected;
 
     if previous.head != current.head {
         let (Some(previous_head), Some(current_head)) = (&previous.head, &current.head) else {
@@ -1064,6 +1288,14 @@ fn capture_git_baseline(root: &Path) -> Result<GitBaseline, DeltaError> {
     if top_level != root {
         return Err(DeltaError::NonGit);
     }
+    if root.join(".gitmodules").exists() {
+        return Err(DeltaError::Git);
+    }
+    let (requires_full_validation, index_entries_inspected) =
+        git_index_requires_full_validation(root)?;
+    if requires_full_validation {
+        return Err(DeltaError::Git);
+    }
 
     let head_output = run_git(root, &["rev-parse", "--verify", "HEAD"])?;
     let head = head_output
@@ -1088,10 +1320,20 @@ fn capture_git_baseline(root: &Path) -> Result<GitBaseline, DeltaError> {
     } else {
         Vec::new()
     };
-    working_paths.extend(git_path_list(
+    let untracked = git_path_list(
         root,
         &["ls-files", "--others", "--exclude-standard", "-z", "--"],
-    )?);
+    )?;
+    // Without `--directory`, ordinary untracked trees are returned as files.
+    // A directory entry here identifies a nested repository or another Git
+    // boundary whose internal file delta the outer repository cannot prove.
+    if untracked
+        .iter()
+        .any(|path| root.join(portable_path(path)).is_dir())
+    {
+        return Err(DeltaError::Git);
+    }
+    working_paths.extend(untracked);
     working_paths.retain(|path| is_analysis_input(path));
     working_paths.sort();
     working_paths.dedup();
@@ -1116,7 +1358,25 @@ fn capture_git_baseline(root: &Path) -> Result<GitBaseline, DeltaError> {
         head,
         working_paths,
         ignored_python_paths,
+        index_entries_inspected,
     })
+}
+
+fn git_index_requires_full_validation(root: &Path) -> Result<(bool, usize), DeltaError> {
+    let flags = run_git(root, &["ls-files", "-v", "-z", "--", "*.py"])?;
+    if !flags.status.success() {
+        return Err(DeltaError::Git);
+    }
+    let mut entries = 0;
+    let hidden = flags
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .any(|record| {
+            entries += 1;
+            matches!(record.first(), Some(b'h' | b'S'))
+        });
+    Ok((hidden, entries))
 }
 
 fn git_name_status(root: &Path, arguments: &[&str]) -> Result<Vec<String>, DeltaError> {
@@ -1223,8 +1483,8 @@ struct IncrementalUpdate {
     metadata: IndexMetadata,
     files: BTreeMap<String, Option<StoredFile>>,
     modules: BTreeMap<String, Option<String>>,
-    reverse: BTreeMap<String, BTreeSet<String>>,
-    candidates: BTreeMap<String, BTreeSet<String>>,
+    reverse: BTreeMap<(String, String), bool>,
+    candidates: BTreeMap<(String, String), bool>,
     work: IndexWorkStats,
     metadata_changed: bool,
 }
@@ -1250,8 +1510,12 @@ fn plan_incremental_update(
     let excluder = configuration.path_excluder().map_err(AnalysisError::from)?;
     let resolver = incremental_resolver(root, configuration, metadata, boundary_paths)?;
     let transaction = database.begin_read().map_err(|_| UpdateError::Storage)?;
-    let reader = PersistentReader {
+    let persistent_reader = PersistentReader {
         transaction: &transaction,
+    };
+    let reader = ProfiledReader {
+        inner: &persistent_reader,
+        records_read: Cell::new(0),
     };
     let mut work = IndexWorkStats {
         inventory_entries_inspected: delta.inventory_entries,
@@ -1262,6 +1526,7 @@ fn plan_incremental_update(
     let mut modules = BTreeMap::<String, Option<String>>::new();
     let mut changed_modules = BTreeSet::new();
     let mut needs_resolution = BTreeSet::new();
+    let mut observed_files = Vec::new();
 
     for key in &delta.paths {
         if !key.ends_with(".py") {
@@ -1269,21 +1534,35 @@ fn plan_incremental_update(
         }
         let path = portable_path(key);
         let old = reader.file(key).map_err(|_| UpdateError::Storage)?;
-        work.index_records_read += usize::from(old.is_some());
         let current = current_file(root, &path, &excluder, &resolver, old.as_ref(), &mut work)?;
         old_files.insert(key.clone(), old.clone());
+        observed_files.push((key.clone(), old, current));
+    }
 
+    // Apply every removal to the planned module universe before validating
+    // additions. This makes moves between overlapping source roots and other
+    // remove-plus-add deltas independent of repository-path sort order.
+    for (_, old, current) in &observed_files {
+        if let Some(old) = old
+            && current
+                .as_ref()
+                .is_none_or(|current| current.module != old.module)
+        {
+            changed_modules.insert(old.module.clone());
+            modules.insert(old.module.clone(), None);
+        }
+    }
+
+    for (key, old, current) in observed_files {
         match (old, current) {
             (None, None) => {}
-            (Some(old), None) => {
-                changed_modules.insert(old.module.clone());
-                modules.insert(old.module.clone(), None);
+            (Some(_old), None) => {
                 files.insert(key.clone(), None);
                 work.modules_removed += 1;
                 work.records_removed += 1;
             }
             (None, Some(mut current)) => {
-                check_module_collision(&reader, &modules, &current.module, key)?;
+                check_module_collision(&reader, &modules, &current.module, &key)?;
                 changed_modules.insert(current.module.clone());
                 modules.insert(current.module.clone(), Some(key.clone()));
                 needs_resolution.insert(key.clone());
@@ -1295,10 +1574,8 @@ fn plan_incremental_update(
             }
             (Some(old), Some(mut current)) => {
                 if old.module != current.module {
-                    changed_modules.insert(old.module.clone());
                     changed_modules.insert(current.module.clone());
-                    modules.insert(old.module.clone(), None);
-                    check_module_collision(&reader, &modules, &current.module, key)?;
+                    check_module_collision(&reader, &modules, &current.module, &key)?;
                     modules.insert(current.module.clone(), Some(key.clone()));
                     work.modules_remapped += 1;
                     needs_resolution.insert(key.clone());
@@ -1331,7 +1608,6 @@ fn plan_incremental_update(
             .candidate_importers(module)
             .map_err(|_| UpdateError::Storage)?
         {
-            work.index_records_read += 1;
             if !matches!(files.get(&importer), Some(None)) {
                 needs_resolution.insert(importer);
             }
@@ -1360,8 +1636,8 @@ fn plan_incremental_update(
         }
     }
 
-    let mut reverse = BTreeMap::<String, BTreeSet<String>>::new();
-    let mut candidates = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut reverse = BTreeMap::<(String, String), bool>::new();
+    let mut candidates = BTreeMap::<(String, String), bool>::new();
     let updates: Vec<_> = files
         .iter()
         .map(|(path, new)| {
@@ -1373,15 +1649,14 @@ fn plan_incremental_update(
         })
         .collect();
     for (path, old, new) in &updates {
-        update_relationship_sets(
-            &reader,
+        update_relationship_mutations(
             path,
             old.as_ref(),
             new.as_ref(),
             &mut reverse,
             &mut candidates,
             &mut work,
-        )?;
+        );
     }
 
     let mut summary = metadata.summary.clone();
@@ -1408,6 +1683,7 @@ fn plan_incremental_update(
         + reverse.len()
         + candidates.len()
         + usize::from(metadata_changed);
+    work.index_records_read = reader.records_read.get();
 
     Ok(IncrementalUpdate {
         metadata: updated_metadata,
@@ -1527,15 +1803,14 @@ fn planned_module_path(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_relationship_sets(
-    reader: &dyn IndexRead,
+fn update_relationship_mutations(
     path: &str,
     old: Option<&StoredFile>,
     new: Option<&StoredFile>,
-    reverse: &mut BTreeMap<String, BTreeSet<String>>,
-    candidates: &mut BTreeMap<String, BTreeSet<String>>,
+    reverse: &mut BTreeMap<(String, String), bool>,
+    candidates: &mut BTreeMap<(String, String), bool>,
     work: &mut IndexWorkStats,
-) -> Result<(), UpdateError> {
+) {
     let old_dependencies: BTreeSet<_> = old
         .into_iter()
         .flat_map(|file| file.dependencies.keys().cloned())
@@ -1544,25 +1819,14 @@ fn update_relationship_sets(
         .into_iter()
         .flat_map(|file| file.dependencies.keys().cloned())
         .collect();
-    for dependency in old_dependencies.union(&new_dependencies) {
-        if !reverse.contains_key(dependency) {
-            reverse.insert(
-                dependency.clone(),
-                reader
-                    .reverse_dependents(dependency)
-                    .map_err(|_| UpdateError::Storage)?
-                    .into_iter()
-                    .collect(),
-            );
-            work.index_records_read += 1;
-        }
-        let dependents = reverse.get_mut(dependency).ok_or(UpdateError::Storage)?;
+    for dependency in old_dependencies.symmetric_difference(&new_dependencies) {
         let was_present = old_dependencies.contains(dependency);
         let is_present = new_dependencies.contains(dependency);
-        if was_present && !is_present && dependents.remove(path) {
+        reverse.insert((dependency.clone(), path.to_owned()), is_present);
+        if was_present && !is_present {
             work.forward_edges_removed += 1;
             work.reverse_edges_removed += 1;
-        } else if !was_present && is_present && dependents.insert(path.to_owned()) {
+        } else if !was_present && is_present {
             work.forward_edges_added += 1;
             work.reverse_edges_added += 1;
         }
@@ -1570,26 +1834,12 @@ fn update_relationship_sets(
 
     let old_candidates = file_candidates(old);
     let new_candidates = file_candidates(new);
-    for candidate in old_candidates.union(&new_candidates) {
-        if !candidates.contains_key(candidate) {
-            candidates.insert(
-                candidate.clone(),
-                reader
-                    .candidate_importers(candidate)
-                    .map_err(|_| UpdateError::Storage)?
-                    .into_iter()
-                    .collect(),
-            );
-            work.index_records_read += 1;
-        }
-        let importers = candidates.get_mut(candidate).ok_or(UpdateError::Storage)?;
-        if old_candidates.contains(candidate) && !new_candidates.contains(candidate) {
-            importers.remove(path);
-        } else if !old_candidates.contains(candidate) && new_candidates.contains(candidate) {
-            importers.insert(path.to_owned());
-        }
+    for candidate in old_candidates.symmetric_difference(&new_candidates) {
+        candidates.insert(
+            (candidate.clone(), path.to_owned()),
+            new_candidates.contains(candidate),
+        );
     }
-    Ok(())
 }
 
 fn file_candidates(file: Option<&StoredFile>) -> BTreeSet<String> {
@@ -1623,18 +1873,19 @@ fn apply_summary_delta(
     }
 }
 
-fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<(), String> {
+fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<u64, String> {
     let transaction = database.begin_write().map_err(string_error)?;
+    let mut bytes_written = 0;
     if update.metadata_changed {
         let mut table = transaction.open_table(META_TABLE).map_err(string_error)?;
-        insert_json(&mut table, META_KEY, &update.metadata)?;
+        bytes_written += insert_json(&mut table, META_KEY, &update.metadata)?;
     }
     if !update.files.is_empty() {
         let mut table = transaction.open_table(FILES_TABLE).map_err(string_error)?;
         for (path, file) in &update.files {
             match file {
                 Some(file) => {
-                    insert_json(&mut table, path, file)?;
+                    bytes_written += insert_json(&mut table, path, file)?;
                 }
                 None => {
                     table.remove(path.as_str()).map_err(string_error)?;
@@ -1649,7 +1900,7 @@ fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<(),
         for (module, path) in &update.modules {
             match path {
                 Some(path) => {
-                    insert_json(&mut table, module, path)?;
+                    bytes_written += insert_json(&mut table, module, path)?;
                 }
                 None => {
                     table.remove(module.as_str()).map_err(string_error)?;
@@ -1661,12 +1912,13 @@ fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<(),
         let mut table = transaction
             .open_table(REVERSE_TABLE)
             .map_err(string_error)?;
-        for (path, dependents) in &update.reverse {
-            if dependents.is_empty() {
-                table.remove(path.as_str()).map_err(string_error)?;
+        for ((dependency, dependent), present) in &update.reverse {
+            let key = relationship_key(dependency, dependent);
+            if *present {
+                table.insert(key.as_str(), 0).map_err(string_error)?;
+                bytes_written += (key.len() + 1) as u64;
             } else {
-                let dependents: Vec<_> = dependents.iter().cloned().collect();
-                insert_json(&mut table, path, &dependents)?;
+                table.remove(key.as_str()).map_err(string_error)?;
             }
         }
     }
@@ -1674,16 +1926,18 @@ fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<(),
         let mut table = transaction
             .open_table(CANDIDATES_TABLE)
             .map_err(string_error)?;
-        for (candidate, importers) in &update.candidates {
-            if importers.is_empty() {
-                table.remove(candidate.as_str()).map_err(string_error)?;
+        for ((candidate, importer), present) in &update.candidates {
+            let key = relationship_key(candidate, importer);
+            if *present {
+                table.insert(key.as_str(), 0).map_err(string_error)?;
+                bytes_written += (key.len() + 1) as u64;
             } else {
-                let importers: Vec<_> = importers.iter().cloned().collect();
-                insert_json(&mut table, candidate, &importers)?;
+                table.remove(key.as_str()).map_err(string_error)?;
             }
         }
     }
-    transaction.commit().map_err(string_error)
+    transaction.commit().map_err(string_error)?;
+    Ok(bytes_written)
 }
 
 pub(crate) fn provenance(imports: &[LocatedImport]) -> Vec<ImportProvenance> {

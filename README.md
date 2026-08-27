@@ -33,10 +33,10 @@ hosted service or a Python interpreter.
 - explain Git-selected changes, including deleted paths and previous rename identities
 - require full validation and select every current test when root configuration changes
 - emit stable, versioned JSON for every current command
-- persist versioned parsed imports, module identities, and resolved local edges
-  for reuse across repeated complete repository builds
-- expose measured discovery, parsing, and graph-construction phases for
-  reproducible performance work
+- maintain a versioned persistent repository index and update bounded Git
+  change sets without reconstructing the complete graph
+- query persistent forward/reverse relationships directly for impact and
+  explanations, with measured index, update, persistence, and query work
 - discover `test_*.py` and `*_test.py` files plus configured test trees
 - select affected test files
 - return one deterministic shortest dependency path with import evidence for
@@ -303,49 +303,78 @@ like an empty selective result. Git-aware `why` returns an actionable
 full-validation diagnostic in this state because a selective dependency
 explanation may be invalid.
 
-## Incremental cache
+## Persistent incremental index
 
-Normal analysis automatically stores parsed static imports and a resolved
-local graph index in Urmare's platform-standard per-user cache directory.
-Cache entries are isolated by the canonical repository root, so no cache files
-are written into the analyzed repository.
+Normal analysis stores a versioned repository index in Urmare's
+platform-standard per-user cache directory. Entries are isolated by canonical
+repository root, and Urmare never writes index data into the analyzed
+repository. Durable identities are normalized repository-relative paths and
+module names rather than process-local graph node IDs.
 
-Unchanged size and modification metadata provide the fast path. When metadata
-changes, Urmare reads the source and compares a BLAKE3 content hash before
-deciding whether AST parsing is necessary. Changed content is reparsed. The
-parsed-import cache header includes its schema version, the Python
-parser/import-extraction version, and normalized source-root, test-root, and
-exclude configuration; incompatible data is ignored and rebuilt. Located
-imports and unresolved-resolution details are versioned with their respective
-cache documents.
+The index retains the Python inventory, file metadata and BLAKE3 hashes,
+module/package/test classification, located parsed imports, resolution
+candidates and matches, unresolved states, forward dependencies, reverse
+dependents, edge provenance, candidate-to-importer relationships, source
+roots, summary counters, compatibility fingerprints, and a Git baseline.
+Reverse and candidate relationships are stored as individual pairs, so a
+one-edge update does not rewrite a repository-sized adjacency value.
 
-The graph index separately stores each path's module identity and the complete
-candidate/match result for every located import. This retains resolved-edge
-provenance, resolution traces, and unresolved-import details across warm runs.
-A file can reuse its resolved edges only when its parsed imports were also
-reused and the complete `(path, module)` set is unchanged. Adding, deleting,
-renaming, or remapping any module invalidates all resolved edges. This
-conservative rule is important for impact recall: an unchanged `import
-candidate` may become local when `candidate.py` is added, or become external
-when that file is removed. Duplicate-module checks still run across every
-current path on every build.
+For a Git repository whose selected root is its top level, repeated commands
+compare the saved baseline with the current `HEAD`, staged and unstaged state,
+untracked files, and ignored Python files that ordinary Urmare discovery would
+index. This covers commits after the baseline, branch switches, older
+checkouts, rebases, restored dirty files, and removed untracked files. A
+no-change run performs no Python parses, resolutions, graph mutations, or
+index writes. When Git reports no candidate paths it also performs no Python
+reads or hashes. Indexed ignored Python paths are conservatively read and
+hashed because Git cannot otherwise report their content changes. A changed
+file is parsed only when its content hash changed. If its parsed imports are
+unchanged, its existing edges and provenance remain intact.
 
-Cache hashing uses BLAKE3's portable pure-Rust implementation, and cache
-locations come from the operating system's standard per-user directories. This
-keeps cache storage cross-platform without adding a runtime system dependency.
+Module additions, removals, renames, and safe remaps use an inverted
+candidate index. Urmare re-resolves only imports that considered the changed
+module identities; unrelated importers remain untouched. This preserves the
+case where an unresolved/external-looking import becomes repository-local, or
+the reverse, without invalidating the complete module universe. Moves are
+planned as removals plus additions, independent of path ordering. Changes
+that alter inferred source roots, including a top-level `src/` convention
+appearing or disappearing, conservatively trigger a full rebuild.
 
-Cache writes are best-effort and atomic. A missing, read-only, interrupted, or
-corrupt cache never prevents analysis and cannot replace current file
-discovery. Every command still allocates an immutable in-memory graph, but it
-can populate that graph from cached identities and resolved edge lists instead
-of remapping and re-resolving every unchanged file. Git deletion and rename
-analysis retains its virtual old-path identities and applies the same
-module-set safety rule.
+Git index states that can hide content from ordinary status, including
+`assume-unchanged`, `skip-worktree`, tracked submodules, and nested untracked
+repositories, disable the bounded path and force complete discovery.
 
-These persistent parsed-import and graph-resolution caches are implemented
-today. True incremental discovery and in-memory graph updates are not: every
-invocation still discovers the current repository and constructs a complete
-immutable graph view.
+Impact reads persistent reverse relationships along the reachable frontier;
+`why` reads forward records along candidate shortest paths. Their work scales
+with the requested result. Complete operations such as unscoped `graph
+--debug` and unresolved-import listing scan the corresponding complete index
+records because their output is complete. Git deleted and previous-rename
+identities remain query overlays and are never committed as current-tree
+records.
+
+The storage engine is redb 4.2, a maintained pure-Rust embedded database with
+ACID transactions and no production transitive or native/system dependency.
+Its Rust 1.90 minimum is below Urmare's Rust 1.95 floor. This keeps the binary
+portable across the supported Windows, macOS, and Linux targets without a
+runtime database installation. A transaction commits one complete index
+generation; readers do not observe partial updates. Concurrent writers are
+serialized by the database lock. If another process holds that lock, Urmare
+builds a correct uncached in-memory view instead of waiting or returning stale
+results.
+
+Missing and incompatible indexes rebuild automatically. Truncated or corrupt
+files are replaced, and an interrupted uncommitted transaction leaves the
+preceding committed generation intact. Any storage or query failure falls
+back to correct uncached analysis. Parser, resolver, index-schema, and relevant
+`[tool.urmare]` fingerprint changes invalidate incompatible state.
+Configuration changes rebuild the current-tree index under the current valid
+configuration while preserving the conservative Git-aware full-validation
+contract described above.
+
+Non-Git repositories currently use full discovery and construction on every
+invocation because Urmare has no portable bounded-delta proof for them. This
+is a correctness fallback, not incremental behavior. The index requires no
+daemon, watcher, platform journal, or remote service.
 
 ## JSON output
 
@@ -549,10 +578,10 @@ The workspace keeps product responsibilities separate:
 - `urmare-python`: Python file discovery with portable exclusions, module
   mapping, AST import extraction, relative import handling, traceable local
   resolution, and convention/configuration-based test discovery
-- `urmare-core`: typed repository configuration, versioned parsed-import and
-  graph-index caches, repository indexing, resolved-edge provenance, graph
-  inspection domain results, impact orchestration, and structured errors,
-  including portable Git command orchestration
+- `urmare-core`: typed repository configuration, transactional persistent
+  repository indexing, bounded Git delta updates, candidate-based invalidation,
+  query-facing graph views, resolved-edge provenance, impact orchestration,
+  and structured errors, including portable Git command orchestration
 - `urmare-cli`: command parsing and human-readable presentation
 
 Repository-relative native `PathBuf` values are canonical inside analysis
@@ -598,8 +627,17 @@ ordinary flat and `src/` repositories do not need a `pyproject.toml` entry.
 
 ## Current limitations
 
-- discovery and in-memory graph allocation still run for every command; cached
-  identities and resolved edges avoid repeated mapping/resolution work
+- non-Git repositories conservatively fall back to complete discovery and
+  construction on every invocation
+- cold, incompatible, configuration-invalidated, corrupt, and source-root
+  remap cases require complete discovery and index reconstruction
+- Git delta detection invokes Git and enumerates ignored Python paths so files
+  included by ordinary discovery are not silently omitted
+- Git safety validation inspects tracked Python index flags; the delta phase
+  can therefore scale with the tracked Python inventory even when parsing,
+  resolution, graph mutation, persistence, and narrow queries remain bounded
+- complete graph/debug and unresolved-import output scans complete relevant
+  index tables; broad impact remains proportional to its result
 - exclusion patterns form one additive set; ordered `!` re-inclusion is not
   supported
 - no sophisticated monorepo source-root inference
@@ -636,21 +674,21 @@ Run the deterministic warm-performance benchmark with:
 cargo bench -p urmare-core --bench synthetic
 ```
 
-It generates temporary 1,000- and 10,000-file Python repositories, measures the
-real discovery, parsing, graph-construction, complete-build, and impact paths;
-validates exact parsed-import and graph-index reuse counts; and checks the
-expected graph and affected-test counts. No generated large fixture is
-committed. See [docs/performance.md](docs/performance.md) for the workload,
-phase definitions, reference observation, and standalone generator.
+It generates temporary 1,000- and 10,000-file Git repositories and separately
+measures cold creation, clean reuse, content/import edits, module add/delete,
+rename, configuration rebuild, and narrow/broad impact. Every case validates
+bounded work counters and compares observable results with a fresh uncached
+analysis. Set `URMARE_BENCH_50000=1` to opt into the 50,000-file case. No
+generated large fixture is committed. See
+[docs/performance.md](docs/performance.md) for the methodology and current
+reference observation.
 
 ## Next implementation slice
 
-The next recommended slice is true incremental indexing: avoid full discovery
-and in-memory graph reconstruction when repository state proves that only a
-small set of files changed. The existing versioned parsed-import and resolution
-caches provide the safe persisted inputs; the next design must preserve impact
-recall across additions, deletions, renames, configuration changes, and module
-universe changes.
+The next performance slice should profile the remaining Git delta-detection
+cost and evaluate bounded filesystem validation for additional repository
+shapes. A non-Git fast path still needs a portable way to prove a complete
+delta; it must not be implemented by silently weakening discovery semantics.
 
 ## License
 

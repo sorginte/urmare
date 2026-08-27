@@ -1,4 +1,8 @@
 //! Urmare's presentation-independent impact-analysis domain.
+//!
+//! Repository analysis is backed by a versioned transactional index. Supported
+//! Git deltas update bounded file and relationship records; unsafe or
+//! unprovable states rebuild completely before serving queries.
 
 mod cache;
 mod config;
@@ -22,7 +26,7 @@ pub use model::{
     ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, RepositoryModule,
     ResolvedLocalModule, UnresolvedImport,
 };
-pub use repository::{AnalysisTimings, RepositoryAnalysis};
+pub use repository::{AnalysisTimings, QueryProfile, RepositoryAnalysis};
 pub use urmare_python::{SourceLocation, StaticImport};
 
 use std::path::Path;
