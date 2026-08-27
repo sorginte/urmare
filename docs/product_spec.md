@@ -1039,6 +1039,14 @@ previously dirty paths restored to baseline
 untracked files later removed
 ```
 
+Ignored-file enumeration uses negative Git pathspecs for the environment and
+tool-cache directories that ordinary discovery always prunes, including
+`.venv`, `venv`, `.tox`, and Python/tool cache directories. Configured
+exclusion globs are applied to the ignored paths returned by Git. Therefore a
+large ignored `.venv` does not enter the warm delta inventory, while ignored
+Python files that remain eligible under ordinary discovery are still tracked
+for correctness.
+
 A no-change update performs zero Python parses, import resolutions, graph
 mutations, and persistent writes. Changed candidate paths are statted, read,
 and hashed. Content whose hash is unchanged reuses parsed imports. Content

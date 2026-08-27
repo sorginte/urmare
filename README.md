@@ -326,7 +326,10 @@ index. This covers commits after the baseline, branch switches, older
 checkouts, rebases, restored dirty files, and removed untracked files. A
 no-change run performs no Python parses, resolutions, graph mutations, or
 index writes. When Git reports no candidate paths it also performs no Python
-reads or hashes. Indexed ignored Python paths are conservatively read and
+reads or hashes. The Git query excludes built-in discovery boundaries such as
+`.venv`, `.tox`, and tool-cache directories before their ignored Python paths
+are returned. Configured exclusion globs are applied to the returned paths.
+Indexed ignored Python paths that remain eligible are conservatively read and
 hashed because Git cannot otherwise report their content changes. A changed
 file is parsed only when its content hash changed. If its parsed imports are
 unchanged, its existing edges and provenance remain intact.
@@ -631,8 +634,10 @@ ordinary flat and `src/` repositories do not need a `pyproject.toml` entry.
   construction on every invocation
 - cold, incompatible, configuration-invalidated, corrupt, and source-root
   remap cases require complete discovery and index reconstruction
-- Git delta detection invokes Git and enumerates ignored Python paths so files
-  included by ordinary discovery are not silently omitted
+- Git delta detection invokes Git for ignored Python paths so files included
+  by ordinary discovery are not silently omitted; built-in environment/cache
+  directories are excluded in the Git pathspec, while custom configuration
+  exclusions are filtered after Git returns matching paths
 - Git safety validation inspects tracked Python index flags; the delta phase
   can therefore scale with the tracked Python inventory even when parsing,
   resolution, graph mutation, persistence, and narrow queries remain bounded

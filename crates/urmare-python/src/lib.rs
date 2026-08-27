@@ -10,9 +10,9 @@ mod imports;
 mod modules;
 
 pub use discovery::{
-    DiscoveryError, DiscoveryStats, ExcludePatternError, PathExcluder, discover_python_files,
-    discover_python_files_profiled, discover_python_files_with_excluder,
-    is_discoverable_python_path,
+    DEFAULT_IGNORED_DIRECTORY_NAMES, DiscoveryError, DiscoveryStats, ExcludePatternError,
+    PathExcluder, discover_python_files, discover_python_files_profiled,
+    discover_python_files_with_excluder, is_discoverable_python_path,
 };
 pub use imports::{
     IMPORT_ANALYSIS_CACHE_TAG, ImportParseError, LocatedImport, SourceLocation, StaticImport,

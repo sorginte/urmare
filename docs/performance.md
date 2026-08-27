@@ -178,6 +178,14 @@ current correctness check for `assume-unchanged` and `skip-worktree` inspects
 tracked Python index entries, so delta detection is not yet strictly bounded
 by the changed path count.
 
+The ignored-file query excludes ordinary discovery's built-in environment and
+tool-cache directories through negative Git pathspecs, so Python files inside
+an ignored `.venv`, `venv`, `.tox`, or cache tree are not returned into the
+delta inventory. Configured `tool.urmare.exclude` globs are applied after Git
+returns ignored paths; Git may therefore still spend time enumerating a large
+ignored tree that is pruned only by a custom configuration pattern, even
+though those paths do not proceed to file stats, parsing, or index updates.
+
 For a 10,000-file content-only edit, the new implementation parsed one file,
 performed zero import resolutions or edge changes, and wrote two records
 (1,696 bytes). Candidate add/delete re-resolved only one dependent importer

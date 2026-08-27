@@ -375,6 +375,83 @@ fn git_index_flags_that_hide_content_changes_force_a_complete_fallback() {
 }
 
 #[test]
+fn skip_worktree_files_force_a_complete_fallback() {
+    let fixture = Fixture::new(&[("module.py", "VALUE = 1\n")]);
+    fixture.assert_parity();
+    fixture.git(&["update-index", "--skip-worktree", "module.py"]);
+
+    let hidden_path = fixture.assert_parity();
+    assert_eq!(hidden_path.index_work.build_kind, IndexBuildKind::Full);
+    assert_eq!(
+        hidden_path.index_work.fallback_reason,
+        Some(IndexFallbackReason::GitStateUnavailable)
+    );
+    assert_eq!(hidden_path.index_work.files_parsed, 1);
+}
+
+#[test]
+fn gitmodules_file_forces_a_complete_fallback() {
+    let fixture = Fixture::new(&[("module.py", "VALUE = 1\n")]);
+    fixture.assert_parity();
+    fixture.write(
+        ".gitmodules",
+        "[submodule \"nested\"]\npath = nested\nurl = ../nested\n",
+    );
+
+    let submodule_boundary = fixture.assert_parity();
+    assert_eq!(
+        submodule_boundary.index_work.build_kind,
+        IndexBuildKind::Full
+    );
+    assert_eq!(
+        submodule_boundary.index_work.fallback_reason,
+        Some(IndexFallbackReason::GitStateUnavailable)
+    );
+    assert_eq!(submodule_boundary.index_work.files_parsed, 1);
+}
+
+#[test]
+fn nested_untracked_repository_forces_a_complete_fallback() {
+    let fixture = Fixture::new(&[("module.py", "VALUE = 1\n")]);
+    fixture.assert_parity();
+    fixture.write("nested/nested_module.py", "NESTED = True\n");
+    git(
+        &fixture.repository.path().join("nested"),
+        &["init", "--quiet"],
+    );
+
+    let nested_repository = fixture.assert_parity();
+    assert_eq!(
+        nested_repository.index_work.build_kind,
+        IndexBuildKind::Full
+    );
+    assert_eq!(
+        nested_repository.index_work.fallback_reason,
+        Some(IndexFallbackReason::GitStateUnavailable)
+    );
+    assert_eq!(nested_repository.index_work.files_parsed, 2);
+}
+
+#[test]
+fn default_ignored_directories_do_not_expand_the_warm_delta_inventory() {
+    let fixture = Fixture::new(&[(".gitignore", ".venv/\n"), ("module.py", "VALUE = 1\n")]);
+    for index in 0..32 {
+        fixture.write(
+            &format!(".venv/lib/python/site-packages/package_{index}.py"),
+            "IGNORED = True\n",
+        );
+    }
+
+    let cold = fixture.assert_parity();
+    assert_eq!(cold.index_work.files_parsed, 1);
+    let warm = fixture.assert_parity();
+    assert_eq!(warm.index_work.build_kind, IndexBuildKind::Reused);
+    assert_eq!(warm.index_work.inventory_entries_inspected, 1);
+    assert_eq!(warm.index_work.files_statted, 0);
+    assert_eq!(warm.index_work.files_parsed, 0);
+}
+
+#[test]
 fn query_time_storage_failure_uses_a_correct_uncached_view() {
     let fixture = Fixture::new(&[
         ("module.py", "VALUE = 1\n"),

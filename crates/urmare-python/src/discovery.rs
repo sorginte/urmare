@@ -5,7 +5,12 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use thiserror::Error;
 use walkdir::{DirEntry, WalkDir};
 
-const IGNORED_DIRECTORIES: &[&str] = &[
+/// Directory component names pruned by ordinary repository discovery.
+///
+/// Consumers that derive a filesystem inventory through another mechanism
+/// can use the same names to avoid enumerating paths that discovery would
+/// unconditionally discard.
+pub const DEFAULT_IGNORED_DIRECTORY_NAMES: &[&str] = &[
     ".git",
     ".venv",
     "venv",
@@ -191,7 +196,7 @@ pub fn is_discoverable_python_path(path: &Path, excluder: &PathExcluder) -> bool
     path.extension() == Some(OsStr::new("py"))
         && !path.components().any(|component| {
             let component = component.as_os_str();
-            IGNORED_DIRECTORIES
+            DEFAULT_IGNORED_DIRECTORY_NAMES
                 .iter()
                 .any(|ignored| component == OsStr::new(ignored))
         })
@@ -204,7 +209,7 @@ fn should_visit(entry: &DirEntry, root: &Path, excluder: &PathExcluder) -> bool 
     }
 
     if entry.file_type().is_dir()
-        && IGNORED_DIRECTORIES
+        && DEFAULT_IGNORED_DIRECTORY_NAMES
             .iter()
             .any(|ignored| entry.file_name() == OsStr::new(ignored))
     {

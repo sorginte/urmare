@@ -11,9 +11,10 @@ use redb::{
 };
 use serde::{Deserialize, Serialize};
 use urmare_python::{
-    IMPORT_ANALYSIS_CACHE_TAG, ImportResolutionFailure, LocalImportResolution, LocatedImport,
-    ModuleResolver, PathExcluder, PythonFile, discover_python_files_profiled,
-    is_discoverable_python_path, parse_imports_with_locations, resolve_local_import_with,
+    DEFAULT_IGNORED_DIRECTORY_NAMES, IMPORT_ANALYSIS_CACHE_TAG, ImportResolutionFailure,
+    LocalImportResolution, LocatedImport, ModuleResolver, PathExcluder, PythonFile,
+    discover_python_files_profiled, is_discoverable_python_path, parse_imports_with_locations,
+    resolve_local_import_with,
 };
 
 use crate::{
@@ -704,7 +705,8 @@ pub(crate) fn build_index_with_boundary_paths(
     }
 
     let delta_started = Instant::now();
-    let delta = match detect_delta(&root, metadata.git_baseline.as_ref()) {
+    let excluder = configuration.path_excluder()?;
+    let delta = match detect_delta(&root, metadata.git_baseline.as_ref(), &excluder) {
         Ok(delta) => delta,
         Err(DeltaError::NonGit) => {
             timings.delta_detection = delta_started.elapsed();
@@ -868,7 +870,8 @@ fn rebuild_persistent(
     let (index, source_roots) = build_full(root, configuration, boundary_paths, &mut work)?;
     timings.update = update_started.elapsed();
     let summary = index.summary();
-    let git_baseline = capture_git_baseline(root).ok();
+    let excluder = configuration.path_excluder()?;
+    let git_baseline = capture_git_baseline(root, &excluder).ok();
     work.inventory_entries_inspected += git_baseline
         .as_ref()
         .map_or(0, |baseline| baseline.index_entries_inspected);
@@ -1238,14 +1241,18 @@ enum DeltaError {
     Git,
 }
 
-fn detect_delta(root: &Path, previous: Option<&GitBaseline>) -> Result<DetectedDelta, DeltaError> {
+fn detect_delta(
+    root: &Path,
+    previous: Option<&GitBaseline>,
+    excluder: &PathExcluder,
+) -> Result<DetectedDelta, DeltaError> {
     let Some(previous) = previous else {
-        return match capture_git_baseline(root) {
+        return match capture_git_baseline(root, excluder) {
             Err(DeltaError::NonGit) => Err(DeltaError::NonGit),
             _ => Err(DeltaError::Git),
         };
     };
-    let current = capture_git_baseline(root)?;
+    let current = capture_git_baseline(root, excluder)?;
     let mut paths = BTreeSet::new();
     paths.extend(previous.working_paths.iter().cloned());
     paths.extend(current.working_paths.iter().cloned());
@@ -1280,7 +1287,7 @@ fn detect_delta(root: &Path, previous: Option<&GitBaseline>) -> Result<DetectedD
     })
 }
 
-fn capture_git_baseline(root: &Path) -> Result<GitBaseline, DeltaError> {
+fn capture_git_baseline(root: &Path, excluder: &PathExcluder) -> Result<GitBaseline, DeltaError> {
     let top_level = git_output(root, &["rev-parse", "--show-toplevel"])?;
     let top_level = PathBuf::from(top_level.trim())
         .canonicalize()
@@ -1338,19 +1345,26 @@ fn capture_git_baseline(root: &Path) -> Result<GitBaseline, DeltaError> {
     working_paths.sort();
     working_paths.dedup();
 
-    let mut ignored_python_paths = git_path_list(
-        root,
-        &[
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "-z",
-            "--",
-            "*.py",
-        ],
-    )?;
-    ignored_python_paths.retain(|path| path.ends_with(".py"));
+    let mut ignored_arguments = vec![
+        "ls-files".to_owned(),
+        "--others".to_owned(),
+        "--ignored".to_owned(),
+        "--exclude-standard".to_owned(),
+        "-z".to_owned(),
+        "--".to_owned(),
+        "*.py".to_owned(),
+    ];
+    for directory in DEFAULT_IGNORED_DIRECTORY_NAMES {
+        // `git ls-files --ignored` otherwise enumerates every Python file in
+        // environments and tool caches that ordinary discovery always prunes.
+        // Keep root and nested forms explicit rather than relying on `**/`
+        // matching zero path components consistently across Git versions.
+        ignored_arguments.push(format!(":(exclude,glob){directory}/**"));
+        ignored_arguments.push(format!(":(exclude,glob)**/{directory}/**"));
+    }
+    let ignored_arguments: Vec<_> = ignored_arguments.iter().map(String::as_str).collect();
+    let mut ignored_python_paths = git_path_list(root, &ignored_arguments)?;
+    ignored_python_paths.retain(|path| is_discoverable_python_path(&portable_path(path), excluder));
     ignored_python_paths.sort();
     ignored_python_paths.dedup();
 
