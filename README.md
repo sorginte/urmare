@@ -46,9 +46,50 @@ hosted service or a Python interpreter.
 Urmare currently analyzes static imports only. It does not claim symbol-level,
 call-graph, runtime, or framework-specific semantic understanding.
 
-## Build
+## Install
 
-Urmare is a Rust workspace and requires Rust 1.95 or newer:
+PyPI provides platform-specific binary wheels for Python 3.9 through 3.14. The
+wheels install the standalone Rust CLI as the `urmare` command; they do not
+compile code and do not require Rust, Cargo, a C compiler, or a CPython ABI.
+
+Install Urmare as an isolated tool with uv or pipx:
+
+```bash
+uv tool install urmare
+urmare impact src/example.py
+```
+
+```bash
+pipx install urmare
+urmare impact src/example.py
+```
+
+Or install it into a virtual environment with pip:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install urmare
+urmare impact src/example.py
+```
+
+On Windows, activate the environment with `.venv\Scripts\activate`.
+Temporary execution also installs a prebuilt wheel:
+
+```bash
+uvx urmare impact src/example.py
+pipx run urmare impact src/example.py
+```
+
+The binary wheels support macOS ARM64 and x86-64, Linux glibc ARM64 and x86-64
+with a `manylinux_2_17` baseline, and Windows MSVC x86-64. GitHub Releases are
+the standalone-archive channel for the same five binaries; PyPI is the
+Python-tool installation channel. Wheels are deliberately not attached to
+GitHub Releases.
+
+## Build from source
+
+Contributors can build the Rust workspace with Rust 1.95 or newer:
 
 ```bash
 git clone https://github.com/sorginte/urmare.git
@@ -57,9 +98,8 @@ cargo build --release
 ```
 
 The CLI binary is written to `target/release/urmare` (`urmare.exe` on Windows).
-Tagged releases are packaged as prebuilt macOS, Linux glibc, and Windows
-archives by the release workflow. See the [release process](docs/releasing.md)
-for the supported targets, integrity checks, and maintainer procedure.
+See the [release process](docs/releasing.md) for artifact identity, integrity
+checks, provenance, and the maintainer procedure.
 
 For development, commands can be run without installing the binary:
 
