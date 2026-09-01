@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "directories",
@@ -1184,11 +1184,11 @@ dependencies = [
 
 [[package]]
 name = "urmare-graph"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "urmare-python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "globset",
  "ruff_python_ast",
