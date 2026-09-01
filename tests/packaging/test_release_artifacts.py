@@ -40,6 +40,9 @@ class ReleaseArtifactTests(unittest.TestCase):
         dist_info = "urmare-0.1.0.dist-info"
         data = "urmare-0.1.0.data/scripts"
         executable = "urmare.exe" if target.endswith("windows-msvc") else "urmare"
+        expanded_tags = "\n".join(
+            f"Tag: py3-none-{platform_tag}" for platform_tag in platform.split(".")
+        )
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr(
                 f"{dist_info}/METADATA",
@@ -47,7 +50,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
             archive.writestr(
                 f"{dist_info}/WHEEL",
-                f"Wheel-Version: 1.0\nTag: py3-none-{platform}\n\n",
+                f"Wheel-Version: 1.0\n{expanded_tags}\n\n",
             )
             archive.writestr(f"{data}/{executable}", binary)
         return wheel
@@ -88,6 +91,19 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertEqual(wheel_binary, archive_binary)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["binary_sha256"], release.sha256_bytes(wheel_binary))
+
+    def test_expands_compressed_wheel_filename_tags(self):
+        self.assertEqual(
+            release.expanded_compatibility_tags(
+                "py3",
+                "none",
+                "manylinux_2_17_x86_64.manylinux2014_x86_64",
+            ),
+            [
+                "py3-none-manylinux2014_x86_64",
+                "py3-none-manylinux_2_17_x86_64",
+            ],
+        )
 
     def test_verifies_exact_five_target_channels_and_writes_audit_manifest(self):
         archives = self.root / "combined-archives"

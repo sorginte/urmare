@@ -126,6 +126,21 @@ def validate_platform_tag(platform_tag: str, target: str) -> None:
         )
 
 
+def expanded_compatibility_tags(
+    python_tag: str, abi_tag: str, platform_tag: str
+) -> List[str]:
+    """Expand the compressed compatibility tag sets used in a wheel filename."""
+    components = (python_tag.split("."), abi_tag.split("."), platform_tag.split("."))
+    if any(not value for values in components for value in values):
+        raise ArtifactError("wheel filename contains an empty compatibility tag")
+    return sorted(
+        f"{python_value}-{abi_value}-{platform_value}"
+        for python_value in components[0]
+        for abi_value in components[1]
+        for platform_value in components[2]
+    )
+
+
 def parse_metadata(contents: bytes) -> Mapping[str, str]:
     return email.parser.BytesParser().parsebytes(contents)
 
@@ -177,10 +192,13 @@ def validate_wheel(path: Path, target: str, version: str) -> Tuple[str, bytes]:
             )
         wheel_metadata = parse_metadata(wheel.read(wheel_names[0]))
         wheel_tags = wheel_metadata.get_all("Tag", [])
-        expected_tag = f"py3-none-{platform_tag}"
-        if expected_tag not in wheel_tags:
+        expected_tags = expanded_compatibility_tags(
+            python_tag, abi_tag, platform_tag
+        )
+        if sorted(wheel_tags) != expected_tags:
             raise ArtifactError(
-                f"wheel WHEEL metadata does not contain filename tag {expected_tag!r}"
+                "wheel WHEEL metadata tags do not match the expanded filename tags; "
+                f"expected {expected_tags!r}, got {wheel_tags!r}"
             )
         return script_names[0], wheel.read(script_names[0])
 
