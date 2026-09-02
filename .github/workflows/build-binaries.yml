@@ -1,0 +1,382 @@
+name: Build binary distributions
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Stable release tag to encode in standalone archive names
+        required: true
+        type: string
+      version:
+        description: Cargo workspace version expected in every artifact
+        required: true
+        type: string
+      commit_sha:
+        description: Full commit SHA represented by every artifact
+        required: true
+        type: string
+    outputs:
+      release_tag:
+        description: Validated release tag
+        value: ${{ jobs.metadata.outputs.release_tag }}
+      version:
+        description: Validated Cargo workspace version
+        value: ${{ jobs.metadata.outputs.version }}
+      commit_sha:
+        description: Validated full commit SHA
+        value: ${{ jobs.metadata.outputs.commit_sha }}
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/release.yml"
+      - ".github/workflows/build-binaries.yml"
+      - ".github/workflows/release.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "LICENSE"
+      - "README.md"
+      - "pyproject.toml"
+      - "scripts/release_artifacts.py"
+      - "tests/packaging/**"
+
+permissions: {}
+
+concurrency:
+  group: build-binaries-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  MATURIN_VERSION: "v1.14.1"
+
+jobs:
+  metadata:
+    name: Validate package metadata
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.metadata.outputs.release-tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      commit_sha: ${{ steps.metadata.outputs.commit-sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate release identity
+        id: metadata
+        shell: bash
+        env:
+          REQUESTED_COMMIT: ${{ inputs.commit_sha || github.sha }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          actual_commit="$(git rev-parse HEAD)"
+          if [[ "$actual_commit" != "$REQUESTED_COMMIT" ]]; then
+            echo "Checked-out commit '$actual_commit' does not match requested artifact commit '$REQUESTED_COMMIT'." >&2
+            exit 1
+          fi
+          python3 scripts/release_artifacts.py metadata \
+            --tag "$REQUESTED_TAG" \
+            --version "$REQUESTED_VERSION" \
+            --commit "$REQUESTED_COMMIT" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Test packaging contract
+        run: python3 -m unittest discover -s tests/packaging -v
+
+  build:
+    name: Package ${{ matrix.target }}
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            manylinux: auto
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: auto
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2_17"
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_17"
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            manylinux: auto
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Prepare runner-owned artifact directories
+        shell: bash
+        run: mkdir -p dist/wheels dist/archives dist/manifest-part
+
+      - name: Build the binary wheel once
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          args: >-
+            --release
+            --locked
+            --out dist/wheels
+            --compatibility pypi
+
+      - name: Package the wheel binary as a standalone archive
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ needs.metadata.outputs.commit_sha }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 scripts/release_artifacts.py package-target \
+            --wheel-dir dist/wheels \
+            --archive-dir dist/archives \
+            --manifest-dir dist/manifest-part \
+            --target "$TARGET" \
+            --tag "$RELEASE_TAG" \
+            --version "$RELEASE_VERSION" \
+            --commit "$COMMIT_SHA"
+
+      - name: Smoke-test the archive and installed wheel
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 scripts/release_artifacts.py smoke-target \
+            --wheel-dir dist/wheels \
+            --archive-dir dist/archives \
+            --fixture fixtures/python-projects/flat-layout \
+            --target "$TARGET" \
+            --tag "$RELEASE_TAG" \
+            --version "$RELEASE_VERSION"
+
+      - name: Upload standalone archive channel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archives-${{ matrix.target }}
+          path: dist/archives/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload wheel channel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist/wheels/*.whl
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload target manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manifest-part-${{ matrix.target }}
+          path: dist/manifest-part/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  python-compatibility:
+    name: Install wheel on Python ${{ matrix.python-version }}
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.9"
+          - "3.14"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download the Linux x86-64 wheel channel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wheels-x86_64-unknown-linux-gnu
+          path: dist/wheels
+
+      - name: Install and execute the wheel
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python3 scripts/release_artifacts.py smoke-wheel \
+            --wheel-dir dist/wheels \
+            --fixture fixtures/python-projects/flat-layout \
+            --target x86_64-unknown-linux-gnu \
+            --version "$RELEASE_VERSION"
+
+  installer-coverage:
+    name: pip, pipx, uv tool, uvx, and pipx run
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.5"
+          enable-cache: false
+
+      - name: Install pipx
+        run: "python -m pip install --disable-pip-version-check --only-binary=:all: pipx==1.8.0"
+
+      - name: Download the Linux x86-64 wheel channel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wheels-x86_64-unknown-linux-gnu
+          path: dist/wheels
+
+      - name: Exercise every Python tool installation path
+        shell: bash
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_ONLY_BINARY: ":all:"
+          PIPX_BIN_DIR: ${{ runner.temp }}/pipx-bin
+          PIPX_HOME: ${{ runner.temp }}/pipx-home
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/uv-bin
+          UV_TOOL_DIR: ${{ runner.temp }}/uv-tools
+        run: |
+          wheel="$(find dist/wheels -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          if [[ -z "$wheel" ]]; then
+            echo "The wheel channel is empty." >&2
+            exit 1
+          fi
+
+          python -m venv "${RUNNER_TEMP}/pip-venv"
+          "${RUNNER_TEMP}/pip-venv/bin/python" -m pip install --no-index --no-deps --only-binary=:all: "$wheel"
+          "${RUNNER_TEMP}/pip-venv/bin/urmare" --version | grep -Fx "urmare $RELEASE_VERSION"
+          "${RUNNER_TEMP}/pip-venv/bin/urmare" --help >/dev/null
+          "${RUNNER_TEMP}/pip-venv/bin/urmare" --root fixtures/python-projects/flat-layout impact package/foo.py >/dev/null
+
+          pipx install --pip-args='--no-deps --only-binary=:all:' "$wheel"
+          "$PIPX_BIN_DIR/urmare" --version | grep -Fx "urmare $RELEASE_VERSION"
+          "$PIPX_BIN_DIR/urmare" --help >/dev/null
+          "$PIPX_BIN_DIR/urmare" --root fixtures/python-projects/flat-layout impact package/foo.py >/dev/null
+
+          uv tool install --no-build --no-cache --no-index "$wheel"
+          "$UV_TOOL_BIN_DIR/urmare" --version | grep -Fx "urmare $RELEASE_VERSION"
+          "$UV_TOOL_BIN_DIR/urmare" --help >/dev/null
+          "$UV_TOOL_BIN_DIR/urmare" --root fixtures/python-projects/flat-layout impact package/foo.py >/dev/null
+
+          uvx --no-build --no-cache --no-index --from "$wheel" urmare --version | grep -Fx "urmare $RELEASE_VERSION"
+          pipx run --pip-args='--no-deps --only-binary=:all:' --spec "$wheel" urmare --version \
+            | grep -Fx "urmare $RELEASE_VERSION"
+
+  verify-release-set:
+    name: Verify complete artifact matrix
+    needs:
+      - metadata
+      - build
+      - python-compatibility
+      - installer-coverage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download only standalone archive channels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: archives-*
+          path: release-set/archives
+          merge-multiple: true
+
+      - name: Download only wheel channels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: release-set/wheels
+          merge-multiple: true
+
+      - name: Download target manifests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: manifest-part-*
+          path: release-set/manifests
+          merge-multiple: true
+
+      - name: Verify exact files, metadata, digests, and binary identity
+        shell: bash
+        env:
+          COMMIT_SHA: ${{ needs.metadata.outputs.commit_sha }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python3 scripts/release_artifacts.py verify-set \
+            --archives-dir release-set/archives \
+            --wheels-dir release-set/wheels \
+            --manifests-dir release-set/manifests \
+            --output release-set/release-manifest.json \
+            --tag "$RELEASE_TAG" \
+            --version "$RELEASE_VERSION" \
+            --commit "$COMMIT_SHA"
+
+      - name: Upload internal release manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-manifest
+          path: release-set/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90

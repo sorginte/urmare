@@ -1168,19 +1168,23 @@ This may become one of the project's strongest long-term differentiators.
 
 ---
 
-# Distribution and Release Vision
+# Distribution and Release
 
-Distribution is a first-class product experience, but release infrastructure is post-MVP.
+Distribution is a first-class product experience. Tag-driven GitHub Release
+automation and binary-only PyPI packaging are implemented without changing the
+local analysis product boundary.
 
 The guiding principle is:
 
 > One source commit and one Git tag should produce one Urmare version consistently across every supported distribution channel.
 
-The release system should eventually build and publish multiple platform-specific artifacts automatically.
+The release system builds and publishes multiple platform-specific artifacts
+automatically after a protected approval.
 
 ## Canonical release source
 
-GitHub Releases should initially be the canonical source for raw prebuilt binaries.
+GitHub Releases are the canonical source for raw prebuilt binaries. PyPI is the
+canonical Python-tool installation channel.
 
 A release such as:
 
@@ -1188,7 +1192,7 @@ A release such as:
 v0.1.0
 ```
 
-should eventually correspond to platform-specific archives similar to:
+corresponds to these platform-specific archives:
 
 ```text
 urmare-v0.1.0-aarch64-apple-darwin.tar.gz
@@ -1197,13 +1201,12 @@ urmare-v0.1.0-x86_64-apple-darwin.tar.gz
 urmare-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 urmare-v0.1.0-aarch64-unknown-linux-gnu.tar.gz
 
-urmare-v0.1.0-x86_64-unknown-linux-musl.tar.gz
-urmare-v0.1.0-aarch64-unknown-linux-musl.tar.gz
-
 urmare-v0.1.0-x86_64-pc-windows-msvc.zip
 ```
 
-The exact naming may evolve.
+The public GitHub Release also contains `SHA256SUMS`, but does not contain
+Python wheels. Internal manifests and Actions artifact wrappers are retained
+for auditing and are not public release assets.
 
 ## Initial platform targets
 
@@ -1236,7 +1239,7 @@ Do not create per-distribution builds for Ubuntu, Debian, Fedora, RHEL, and simi
 
 Although Urmare is written in Rust, Python developers are the primary audience.
 
-The preferred eventual user experience is:
+The supported user experience is:
 
 ```bash
 uv tool install urmare
@@ -1248,13 +1251,20 @@ or:
 uvx urmare impact --git-diff main
 ```
 
-PyPI should therefore be a first-class distribution channel.
+PyPI is therefore a first-class distribution channel.
 
-Where possible, Python packaging should ship the standalone Urmare binary in platform-specific wheels rather than requiring compilation on the user's machine.
+Python packaging ships the standalone Urmare binary in five platform-specific
+wheels rather than compiling on the user's machine. The installed command is
+`urmare`; no Rust toolchain, C compiler, or source distribution is required.
 
-The packaging design should avoid coupling Urmare unnecessarily to individual CPython ABIs or requiring a separate artifact matrix for every Python minor version.
+The wheels use interpreter-independent `py3-none` tags and support Python 3.9
+through 3.14 without a separate artifact matrix for every Python minor version.
 
-Publishing should eventually use trusted/OIDC-based publishing rather than long-lived repository secrets where supported.
+PyPI publication uses Trusted Publishing with a short-lived GitHub OIDC
+credential and a protected `pypi` environment. Each target is built once by
+Maturin; the exact wheel binary is also packaged into the standalone archive.
+The wheels promoted to PyPI are the same files produced and tested by the
+reusable builder in the tag workflow.
 
 ## crates.io
 
@@ -1310,10 +1320,10 @@ The website can link to or redirect to GitHub Release artifacts and PyPI. A futu
 
 ## Release integrity
 
-Every public release should eventually include:
+Every public release includes:
 
 - cryptographic checksums
-- reproducible release metadata where practical
+- an internal versioned release manifest with artifact and binary digests
 - provenance or attestations from the release workflow
 
 Later stages may add:
@@ -1335,7 +1345,9 @@ Because Urmare will be distributed as prebuilt binaries across operating systems
 - avoid requiring Rust on end-user machines
 - avoid unnecessary CPython ABI coupling
 
-These constraints should influence implementation decisions now even though the release pipeline itself is not part of the MVP.
+These constraints influence both core implementation and the current release
+pipeline. Release automation remains operational infrastructure rather than a
+new analysis capability.
 
 ---
 
@@ -1353,7 +1365,6 @@ Miez is a separate project and explicitly outside Urmare's scope.
 
 Do not implement:
 
-- package installation
 - dependency resolution from package indexes
 - test framework replacement
 - distributed execution
@@ -1367,8 +1378,6 @@ Do not implement:
 - service discovery
 - Docker analysis
 - framework-specific semantics
-- PyPI packaging
-- GitHub release automation
 - Homebrew publishing
 - installer generation
 - signing or notarization

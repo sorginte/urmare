@@ -5,69 +5,46 @@ on:
     tags:
       - "v*.*.*"
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
   validate:
     name: Validate release
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.metadata.outputs.release-tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      commit_sha: ${{ steps.metadata.outputs.commit-sha }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate tag and workspace version
-        id: version
+      - name: Validate tag and Cargo workspace version
+        id: metadata
         shell: bash
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Release tag must be a stable semantic version such as v0.1.0; got '$RELEASE_TAG'." >&2
+          actual_commit="$(git rev-parse HEAD)"
+          if [[ "$actual_commit" != "$GITHUB_SHA" ]]; then
+            echo "Checked-out commit '$actual_commit' does not match tag commit '$GITHUB_SHA'." >&2
             exit 1
           fi
-
-          workspace_version="$(
-            awk '
-              /^\[workspace\.package\]$/ { in_section = 1; next }
-              /^\[/ { in_section = 0 }
-              in_section && /^version[[:space:]]*=/ {
-                value = $0
-                sub(/^[^"]*"/, "", value)
-                sub(/".*$/, "", value)
-                print value
-                exit
-              }
-            ' Cargo.toml
-          )"
-
-          if [[ -z "$workspace_version" ]]; then
-            echo "Could not read workspace.package.version from Cargo.toml." >&2
-            exit 1
-          fi
-
-          tag_version="${RELEASE_TAG#v}"
-          if [[ "$tag_version" != "$workspace_version" ]]; then
-            echo "Release tag '$RELEASE_TAG' does not match workspace version '$workspace_version'." >&2
-            exit 1
-          fi
-
-          echo "version=$workspace_version" >> "$GITHUB_OUTPUT"
+          python3 scripts/release_artifacts.py metadata \
+            --tag "$GITHUB_REF_NAME" \
+            --commit "$GITHUB_SHA" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Verify release commit is on main
+        shell: bash
         run: |
           if ! git show-ref --verify --quiet refs/remotes/origin/main; then
             echo "Could not find origin/main in the fetched repository." >&2
@@ -80,177 +57,95 @@ jobs:
           fi
 
   build:
-    name: Build ${{ matrix.target }}
+    name: Build verified distributions
     needs: validate
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-          - os: macos-15
-            target: aarch64-apple-darwin
-            archive: tar.gz
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: tar.gz
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            archive: zip
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/build-binaries.yml
+    with:
+      release_tag: ${{ needs.validate.outputs.release_tag }}
+      version: ${{ needs.validate.outputs.version }}
+      commit_sha: ${{ needs.validate.outputs.commit_sha }}
 
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
-
-      - name: Build optimized binary
-        run: cargo +stable build --release --locked -p urmare-cli --target ${{ matrix.target }}
-
-      - name: Smoke-test Unix binary
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          binary="target/$TARGET/release/urmare"
-          actual_version="$("$binary" --version)"
-          expected_version="urmare $RELEASE_VERSION"
-
-          if [[ "$actual_version" != "$expected_version" ]]; then
-            echo "Expected '$expected_version', got '$actual_version'." >&2
-            exit 1
-          fi
-
-      - name: Smoke-test Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          $binary = "target/$env:TARGET/release/urmare.exe"
-          $actualVersion = (& $binary --version).Trim()
-          $expectedVersion = "urmare $env:RELEASE_VERSION"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "The release binary exited with code $LASTEXITCODE."
-          }
-
-          if ($actualVersion -ne $expectedVersion) {
-            throw "Expected '$expectedVersion', got '$actualVersion'."
-          }
-
-      - name: Package Unix archive
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          package="urmare-$RELEASE_TAG-$TARGET"
-          mkdir -p "dist/$package"
-          cp "target/$TARGET/release/urmare" "dist/$package/urmare"
-          cp README.md LICENSE "dist/$package/"
-          tar -C dist -czf "dist/$package.tar.gz" "$package"
-
-      - name: Package Windows archive
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          $package = "urmare-$env:RELEASE_TAG-$env:TARGET"
-          New-Item -ItemType Directory -Path "dist/$package" | Out-Null
-          Copy-Item "target/$env:TARGET/release/urmare.exe" "dist/$package/urmare.exe"
-          Copy-Item README.md, LICENSE "dist/$package/"
-          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
-
-      - name: Upload release archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          path: dist/urmare-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
-          archive: false
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 7
-
-  publish-draft:
-    name: Publish draft release
+  attest-wheels:
+    name: Attest PyPI wheels
     needs:
       - validate
       - build
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Download only wheel channels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist/wheels
+          merge-multiple: true
+
+      - name: Attest wheel build provenance
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: dist/wheels/*.whl
+
+  publish-draft:
+    name: Create draft GitHub Release
+    needs:
+      - validate
+      - build
+      - attest-wheels
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
+      actions: read
       artifact-metadata: write
       attestations: write
       contents: write
       id-token: write
     steps:
-      - name: Download release archives
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download only standalone archive channels
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: urmare-${{ github.ref_name }}-*
-          path: dist
+          pattern: archives-*
+          path: dist/release
           merge-multiple: true
-          skip-decompress: true
 
-      - name: Verify archives and generate checksums
+      - name: Verify public assets and generate checksums
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
         run: |
-          cd dist
-
-          expected=(
-            "urmare-$RELEASE_TAG-aarch64-apple-darwin.tar.gz"
-            "urmare-$RELEASE_TAG-x86_64-apple-darwin.tar.gz"
-            "urmare-$RELEASE_TAG-aarch64-unknown-linux-gnu.tar.gz"
-            "urmare-$RELEASE_TAG-x86_64-unknown-linux-gnu.tar.gz"
-            "urmare-$RELEASE_TAG-x86_64-pc-windows-msvc.zip"
-          )
-
-          for archive in "${expected[@]}"; do
-            if [[ ! -f "$archive" ]]; then
-              echo "Missing release archive '$archive'." >&2
-              exit 1
-            fi
-          done
-
-          archive_count="$(find . -maxdepth 1 -type f -name 'urmare-*' | wc -l | tr -d ' ')"
-          if [[ "$archive_count" != "${#expected[@]}" ]]; then
-            echo "Expected ${#expected[@]} release archives, found $archive_count." >&2
-            exit 1
-          fi
-
-          sha256sum "${expected[@]}" > SHA256SUMS
+          python3 scripts/release_artifacts.py prepare-release-assets \
+            --archives-dir dist/release \
+            --tag "$RELEASE_TAG"
+          cd dist/release
           sha256sum --check SHA256SUMS
 
-      - name: Attest release artifacts
+      - name: Attest GitHub Release assets
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/SHA256SUMS
+            dist/release/*.tar.gz
+            dist/release/*.zip
+            dist/release/SHA256SUMS
 
       - name: Create or update draft release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           if release_is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
@@ -266,4 +161,35 @@ jobs:
               --verify-tag
           fi
 
-          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release upload "$RELEASE_TAG" \
+            dist/release/*.tar.gz \
+            dist/release/*.zip \
+            dist/release/SHA256SUMS \
+            --clobber
+
+  publish-pypi:
+    name: Publish wheels to PyPI
+    needs:
+      - validate
+      - publish-draft
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/urmare/${{ needs.validate.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download only verified wheel channels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish exact wheels with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+          attestations: true
+          print-hash: true
