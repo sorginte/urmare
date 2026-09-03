@@ -1,301 +1,108 @@
 # Urmare
 
-Urmare is Sorginte's high-performance dependency and impact-analysis engine for
-Python repositories. Its core question is:
+Urmare is a fast, deterministic impact-analysis tool for Python repositories.
+It answers one question:
 
 > Given a Python code change, what follows from it?
 
-The project is an early MVP. It builds a deterministic local import graph,
-calculates file-level blast radius, selects affected pytest files, and explains
-why a dependent is affected. Core analysis runs locally and does not require a
-hosted service or a Python interpreter.
+Urmare maps static imports, calculates affected modules and pytest files, and
+explains dependency paths. Analysis runs locally without a hosted service or a
+Python runtime.
 
-## Current capabilities
+The project is an early MVP. It intentionally focuses on file-level static
+imports and favors impact recall over aggressive test reduction.
 
-- discover `.py` files while ignoring Git metadata, virtual environments, and
-  common Python tool caches
-- infer flat and repository-root `src/` layouts
-- load optional source roots, test roots, and exclusions from `[tool.urmare]`
-- resolve imports across multiple explicitly configured source roots
-- map repository-relative paths to Python modules
-- parse absolute and relative static imports
-- resolve imports to repository-local modules and report located, structured
-  unresolved imports
-- retain every source import and location that creates a resolved local edge
-- trace local-resolution candidates and matches for debugging
-- inspect module mappings, dependency edges, and per-module neighbor counts
-- calculate direct and transitive reverse dependencies
-- union explicit multi-file impact with per-result attribution
-- detect staged, unstaged, and untracked Python changes against `HEAD`, or add
-  committed branch changes relative to an explicit Git merge base
-- union impact across multiple Git-changed files with per-result attribution
-- preserve conservative impact for deleted and renamed modules
-- explain Git-selected changes, including deleted paths and previous rename identities
-- require full validation and select every current test when root configuration changes
-- emit stable, versioned JSON for every current command
-- persist versioned parsed imports, module identities, and resolved local edges
-  for reuse across repeated complete repository builds
-- expose measured discovery, parsing, and graph-construction phases for
-  reproducible performance work
-- discover `test_*.py` and `*_test.py` files plus configured test trees
-- select affected test files
-- return one deterministic shortest dependency path with import evidence for
-  every hop
-- emit actionable errors for invalid input, configuration, and Python syntax
+## What Urmare does
 
-Urmare currently analyzes static imports only. It does not claim symbol-level,
-call-graph, runtime, or framework-specific semantic understanding.
+- finds direct and transitive dependents of one or more changed Python files;
+- selects affected pytest files;
+- analyzes staged, unstaged, untracked, committed, deleted, and renamed Git
+  changes;
+- explains each result with a deterministic dependency path and import
+  locations;
+- supports flat, `src/`, and explicitly configured multi-root repositories;
+- maintains a persistent local index with bounded updates for Git repositories;
+- emits stable, versioned JSON for scripts, CI, and coding agents.
 
 ## Install
 
-PyPI provides platform-specific binary wheels for Python 3.9 through 3.14. The
-wheels install the standalone Rust CLI as the `urmare` command; they do not
-compile code and do not require Rust, Cargo, a C compiler, or a CPython ABI.
-
-Install Urmare as an isolated tool with uv or pipx:
+Install Urmare as an isolated tool with [uv](https://docs.astral.sh/uv/) or
+[pipx](https://pipx.pypa.io/):
 
 ```bash
 uv tool install urmare
-urmare impact src/example.py
-```
-
-```bash
+# or
 pipx install urmare
-urmare impact src/example.py
 ```
 
-Or install it into a virtual environment with pip:
+You can also install it in a virtual environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install urmare
-urmare impact src/example.py
 ```
 
-On Windows, activate the environment with `.venv\Scripts\activate`.
-Temporary execution also installs a prebuilt wheel:
+On Windows, activate with `.venv\Scripts\activate`.
+
+PyPI wheels contain the standalone Rust CLI and do not compile code during
+installation. Prebuilt binaries support macOS ARM64 and x86-64, Linux glibc
+ARM64 and x86-64 with a `manylinux_2_17` baseline, and Windows MSVC x86-64.
+Standalone archives for the same targets are available from GitHub Releases.
+
+## Quick start
+
+Run Urmare from the repository you want to analyze:
 
 ```bash
-uvx urmare impact src/example.py
-pipx run urmare impact src/example.py
+# What depends on this file?
+urmare impact src/payments/stripe.py
+
+# Which tests are affected?
+urmare tests --affected src/payments/stripe.py
+
+# Why is this test affected?
+urmare why src/payments/stripe.py tests/api/test_checkout.py
 ```
 
-The binary wheels support macOS ARM64 and x86-64, Linux glibc ARM64 and x86-64
-with a `manylinux_2_17` baseline, and Windows MSVC x86-64. GitHub Releases are
-the standalone-archive channel for the same five binaries; PyPI is the
-Python-tool installation channel. Wheels are deliberately not attached to
-GitHub Releases.
-
-## Build from source
-
-Contributors can build the Rust workspace with Rust 1.95 or newer:
+Analyze more than one explicit change at once:
 
 ```bash
-git clone https://github.com/sorginte/urmare.git
-cd urmare
-cargo build --release
+urmare impact src/payments/models.py src/payments/stripe.py
 ```
 
-The CLI binary is written to `target/release/urmare` (`urmare.exe` on Windows).
-See the [release process](docs/releasing.md) for artifact identity, integrity
-checks, provenance, and the maintainer procedure.
-
-For development, commands can be run without installing the binary:
+Analyze the current Git working tree or all branch changes since a merge base:
 
 ```bash
-cargo run -p urmare-cli -- graph
+urmare impact --changed
+urmare tests --affected --changed
+
+urmare impact --git-diff origin/main
+urmare tests --affected --git-diff origin/main
 ```
 
-## Usage
-
-Use the top-level help to discover commands and command-specific help to inspect
-their arguments and options:
-
-```bash
-urmare --help
-urmare help graph
-```
-
-Run Urmare from the repository being analyzed:
+Inspect the repository graph when a mapping or result is surprising:
 
 ```bash
 urmare graph
-urmare graph --all
-urmare graph --json
-urmare graph --debug
-urmare graph --debug --focus src/example/service.py
-urmare graph --debug --json
-urmare impact src/example/service.py
-urmare impact src/example/service.py src/example/models.py
-urmare impact src/example/service.py --all
-urmare impact --changed
-urmare impact --changed --json
-urmare impact --git-diff main
-urmare impact --git-diff main --json
-urmare tests --affected src/example/service.py
-urmare tests --affected src/example/service.py src/example/models.py
-urmare tests --affected --changed
-urmare tests --affected --changed --json
-urmare tests --affected --git-diff main
-urmare tests --affected --git-diff main --json
-urmare why src/example/service.py tests/test_api.py
-urmare why src/example/service.py tests/test_api.py --json
-urmare why src/example/service.py tests/test_api.py --changed
-urmare why src/example/service.py tests/test_api.py --git-diff main --json
+urmare graph --debug --focus src/payments/service.py
 ```
 
-The complete command grammar is:
+Common options:
 
-```text
-urmare [--root PATH] graph [--json|--all] [--debug [--focus FILE]]
-urmare [--root PATH] impact <FILE...|--changed|--git-diff BASE> [--json|--all]
-urmare [--root PATH] tests --affected <FILE...|--changed|--git-diff BASE> [--json]
-urmare [--root PATH] why CHANGED_FILE AFFECTED_FILE [--changed|--git-diff BASE] [--json]
-```
+- `--json` returns complete, deterministic machine-readable output.
+- `--all` disables truncation in supported human-readable output.
+- `--root PATH` analyzes another repository instead of the current directory.
+- `urmare help COMMAND` shows the complete grammar for a command.
 
-The alternative change sources are mutually exclusive.
-
-Or select a repository explicitly:
-
-```bash
-urmare --root path/to/repository graph
-```
-
-`graph` reports unmatched static imports with one-indexed target locations:
-
-```text
-Unresolved import details (2)
-  No repository-local module matched; external packages are not resolved.
-  src/api/app.py:4:8  import fastapi
-  tests/test_app.py:1:20  from pytest import fixture
-```
-
-These entries are diagnostics, not claims that an import is invalid: Urmare
-does not inspect installed environments or package indexes. Human output shows
-at most 25 entries by default; `graph --all` displays every entry and
-`graph --json` always contains the complete unresolved-import list.
-
-Use `graph --debug` when a module mapping or impact result is surprising. It
-adds the inferred source roots, repository path-to-module mappings, resolved
-edges with their source imports, and a trace for every local-resolution
-attempt. Each trace distinguishes resolved imports, unmatched imports, and
-relative imports that ascend above the importer package; it lists every dotted
-module candidate considered and every repository path matched.
-
-The following is an abbreviated inspection:
-
-```text
-Graph inspection
-
-Module mappings (1)
-  src/payments/service.py -> payments.service [source; 2 dependencies; 1 dependents]
-
-Resolved import edges (3)
-  src/payments/service.py -> src/payments/stripe.py
-    via src/payments/service.py:1:15  from . import stripe
-  ...
-
-Import resolution trace (1)
-  src/payments/service.py:1:15  from . import stripe [resolved]
-    candidates: payments, payments.stripe
-    matched payments -> src/payments/__init__.py
-    matched payments.stripe -> src/payments/stripe.py
-```
-
-`--focus <file>` requires `--debug` and restricts module mappings and import
-attempts to that file while retaining both incoming and outgoing incident
-edges. Debug human output is bounded to 25 modules, edges, and traces per
-section unless `--all` is passed. `graph --debug --json` is always complete;
-plain `graph --json` preserves the concise summary schema.
-
-An impact result starts with counts and then lists directly affected modules,
-transitively affected modules, and affected tests in separate sections. Test
-files are shown in the test section rather than duplicated as modules. Human
-output shows at most 25 entries per section by default and reports how many were
-omitted; pass `--all` to display every entry. `--json` is always complete and is
-never subject to the human-output limit.
-
-```text
-Impact analysis
-
-Changed (1)
-  src/payments/stripe.py
-
-Summary
-  Directly affected modules      2
-  Transitively affected modules  1
-  Affected tests                  2
-
-Directly affected modules (2)
-  src/payments/formatters/card.py
-  src/payments/service.py
-
-Transitively affected modules (1)
-  src/api/checkout.py
-
-Affected tests (2)
-  tests/api/test_checkout.py
-  tests/payments/test_stripe.py
-```
-
-Urmare does not assign `LOW`, `MEDIUM`, or `HIGH` blast-radius/risk labels. A
-risk classification will require a separately specified deterministic model.
-`tests --affected` continues to print one canonical repository-relative test
-path per line, making its output easy to compose with other tools.
-
-Explicit path commands accept one or more changed Python files. Urmare
-normalizes and deduplicates the inputs, unions their reverse dependency
-closures, and records every changed file that caused each affected result. If
-any input is missing, outside the repository, or not indexed, the command fails
-with an actionable diagnostic instead of returning a partial result. Explicit
-files, `--changed`, and `--git-diff` are mutually exclusive.
-
-`--changed` analyzes the current Git working tree against `HEAD`. It includes
-staged, unstaged, and untracked Python files that are not ignored by Git,
-including added, deleted, and renamed paths. It does not include changes that
-are already committed to `HEAD`:
-
-```bash
-urmare impact --changed
-urmare impact --changed --json
-urmare tests --affected --changed
-urmare tests --affected --changed --json
-```
-
-`--git-diff <base>` additionally includes committed branch changes since the
-merge base of the provided revision and `HEAD`, together with the same working
-tree changes:
-
-```bash
-urmare impact --git-diff origin/main
-urmare tests --affected --git-diff origin/main
-urmare why src/payments/stripe.py tests/api/test_checkout.py --git-diff origin/main
-```
-
-Renames seed impact from both the old and new module identities. Deleted module
-paths receive virtual graph nodes, allowing surviving imports and downstream
-tests to remain connected without checking out the base revision. Deleted test
-files themselves are not emitted as runnable affected tests.
-
-Git-aware `why` requires its changed path to belong to the selected Git change
-set. A deleted path and the previous path of a rename can be supplied even
-though neither currently exists. The affected path must be a currently indexed
-file. Successful explanations use the same deterministic shortest-path and
-import-provenance contract as ordinary `why`.
-
-Git-aware analysis requires the `git` executable. When `--root` is omitted,
-`impact --changed`, `impact --git-diff`, `tests --affected --changed`, and
-`tests --affected --git-diff`, plus Git-aware `why`, discover the containing
-Git repository's top-level directory, so they work from a repository
-subdirectory. An explicit `--root` remains authoritative and must identify the
-Git top level.
+Explicit files, `--changed`, and `--git-diff` are alternative change sources
+and cannot be combined. Invalid or unindexed paths fail with an actionable
+diagnostic instead of returning a partial result.
 
 ## Configuration
 
-Common flat and `src/` layouts remain zero-configuration. Repositories can
-declare additional analysis boundaries in the selected root's
-`pyproject.toml`:
+Flat and conventional `src/` layouts work without configuration. For monorepos
+or custom layouts, add `[tool.urmare]` to the repository's `pyproject.toml`:
 
 ```toml
 [tool.urmare]
@@ -304,360 +111,159 @@ test-roots = ["verification", "integration/checks"]
 exclude = ["generated/**", "vendor", "**/snapshots/*.py"]
 ```
 
-Configured source roots are authoritative for module mapping and are resolved
-relative to the repository root. They must be non-empty repository-relative
-directories and may not contain `..`. Files outside every configured root,
-including conventional top-level tests, keep repository-relative module names.
-If configured roots overlap, the most specific matching root wins.
+- Source roots define module identities.
+- Test roots supplement `test_*.py` and `*_test.py` discovery.
+- Exclusions are repository-relative `/`-separated globs.
+- Result paths always remain canonical and repository-relative.
 
-File paths in results remain canonical and repository-relative; configuring a
-source root changes `packages/payments/src/payments/service.py` into the
-importable module `payments.service`, but output continues to show the complete
-repository path. Urmare rejects configuration typos, missing roots, duplicate
-roots, and module names exposed by more than one root instead of building an
-ambiguous graph.
+Configuration is validated strictly. Missing roots, escaping paths, invalid
+globs, unknown options, and ambiguous modules are rejected. A Git change to the
+root `pyproject.toml` requires full validation and conservatively selects every
+eligible test rather than claiming a selective result.
 
-Configured test roots supplement filename discovery: every discovered `.py`
-file beneath one of those roots is classified as a test, while conventional
-`test_*.py` and `*_test.py` files elsewhere remain tests. Test roots affect
-classification only; source roots remain the authority for module identity.
+## Incremental indexing
 
-Exclusion patterns are repository-relative portable globs. Configuration must
-use `/` separators on every platform; `*` stays within one path component and
-`**` can span directories. A pattern matching a directory, such as `vendor`,
-prunes the full subtree. Exclusions run before parsing and graph construction,
-take precedence over source/test roots, and also filter Git-diff change seeds.
-Renames crossing an exclusion boundary are conservatively treated as an add or
-delete on the included side. Urmare's built-in ignores for `.git`, virtualenvs,
-and common Python cache directories always remain active.
+Urmare stores a versioned index in the operating system's per-user cache,
+isolated by canonical repository root. It never writes cache data into the
+analyzed repository and requires no daemon or remote service.
 
-A Git change to the repository-root `pyproject.toml` can redefine all of these
-boundaries. Added, modified, deleted, and renamed configuration therefore make
-selective module impact unsafe. Git-aware `impact` reports `Full validation
-required`, marks module impact unavailable, and selects every test currently
-eligible under the current configuration. Git-aware `tests --affected` prints
-all of those tests and writes an explicit warning to stderr in human mode. JSON
-uses the `full_validation` object documented below. This also applies when
-`pyproject.toml` is the only changed path, so configuration changes never look
-like an empty selective result. Git-aware `why` returns an actionable
-full-validation diagnostic in this state because a selective dependency
-explanation may be invalid.
+For a Git repository at its top level, Urmare uses Git changes and content
+hashes to update only relevant files and relationships. A clean reuse performs
+no Python parsing, import resolution, graph mutation, or index writes. A
+content-only one-file edit parses that file without re-resolving unchanged
+imports.
 
-## Incremental cache
+Unsafe or incompatible states fall back to a complete correct analysis. These
+include non-Git roots, configuration or source-root changes, corrupt indexes,
+tracked submodules, nested untracked repositories, and Git index flags that can
+hide content changes.
 
-Normal analysis automatically stores parsed static imports and a resolved
-local graph index in Urmare's platform-standard per-user cache directory.
-Cache entries are isolated by the canonical repository root, so no cache files
-are written into the analyzed repository.
+## JSON and exit codes
 
-Unchanged size and modification metadata provide the fast path. When metadata
-changes, Urmare reads the source and compares a BLAKE3 content hash before
-deciding whether AST parsing is necessary. Changed content is reparsed. The
-parsed-import cache header includes its schema version, the Python
-parser/import-extraction version, and normalized source-root, test-root, and
-exclude configuration; incompatible data is ignored and rebuilt. Located
-imports and unresolved-resolution details are versioned with their respective
-cache documents.
+Every command accepts `--json`. JSON is written to stdout, uses canonical
+repository-relative paths, and includes a `schema_version`. Failures leave
+stdout empty and write an actionable diagnostic to stderr.
 
-The graph index separately stores each path's module identity and the complete
-candidate/match result for every located import. This retains resolved-edge
-provenance, resolution traces, and unresolved-import details across warm runs.
-A file can reuse its resolved edges only when its parsed imports were also
-reused and the complete `(path, module)` set is unchanged. Adding, deleting,
-renaming, or remapping any module invalidates all resolved edges. This
-conservative rule is important for impact recall: an unchanged `import
-candidate` may become local when `candidate.py` is added, or become external
-when that file is removed. Duplicate-module checks still run across every
-current path on every build.
-
-Cache hashing uses BLAKE3's portable pure-Rust implementation, and cache
-locations come from the operating system's standard per-user directories. This
-keeps cache storage cross-platform without adding a runtime system dependency.
-
-Cache writes are best-effort and atomic. A missing, read-only, interrupted, or
-corrupt cache never prevents analysis and cannot replace current file
-discovery. Every command still allocates an immutable in-memory graph, but it
-can populate that graph from cached identities and resolved edge lists instead
-of remapping and re-resolving every unchanged file. Git deletion and rename
-analysis retains its virtual old-path identities and applies the same
-module-set safety rule.
-
-These persistent parsed-import and graph-resolution caches are implemented
-today. True incremental discovery and in-memory graph updates are not: every
-invocation still discovers the current repository and constructs a complete
-immutable graph view.
-
-## JSON output
-
-Every current command accepts `--json` for CI systems, scripts, and coding
-agents. JSON is written to stdout; failures leave stdout empty and write an
-actionable diagnostic to stderr. Impact JSON always contains the complete
-result and does not accept the human-only `--all` option.
-
-Graph schema version 1 contains deterministic repository totals and every
-unresolved static import:
+An impact result has this concise shape:
 
 ```json
 {
   "schema_version": 1,
-  "python_files": 42,
-  "modules": 42,
-  "import_edges": 128,
-  "tests": 9,
-  "unresolved_imports": 1,
-  "unresolved_import_details": [
-    {
-      "importer": "src/api/app.py",
-      "line": 4,
-      "column": 8,
-      "import": {
-        "kind": "import",
-        "module": "fastapi"
-      }
-    }
-  ]
-}
-```
-
-Passing `graph --debug --json` adds an `inspection` object containing `focus`,
-`source_roots`, `modules`, `edges`, and `resolution_traces`. Every edge records
-its dependent, dependency, and all located static imports that produced that
-unique edge. Every trace contains a deterministic `status`, candidate module
-names, and matched local modules with canonical paths. The optional additive
-object is omitted by plain `graph --json`.
-
-Impact schema version 1 has this shape:
-
-```json
-{
-  "schema_version": 1,
-  "changed": ["src/payments/models.py", "src/payments/stripe.py"],
+  "changed": ["src/payments/stripe.py"],
   "directly_affected": ["src/payments/service.py"],
   "transitively_affected": ["src/api/checkout.py"],
   "affected_tests": ["tests/api/test_checkout.py"],
   "attributions": [
     {
       "affected": "tests/api/test_checkout.py",
-      "caused_by": ["src/payments/models.py", "src/payments/stripe.py"]
+      "caused_by": ["src/payments/stripe.py"]
     }
   ]
 }
 ```
-
-Test-selection schema version 1 contains `schema_version`, `changed`,
-`affected_tests`, and test-only `attributions`. Every field is present even when
-its array is empty. Arrays and attribution entries are deterministic, and paths
-always use canonical repository-relative `/` notation. Rename analysis lists
-both old and new identities in `changed`. Explicit multi-file analysis uses the
-same deterministic union and attribution schema.
-
-When the root `pyproject.toml` changed, impact and test-selection outputs add
-this optional v1 field:
-
-```json
-{
-  "full_validation": {
-    "required": true,
-    "reason": "configuration_changed",
-    "configuration_paths": ["pyproject.toml"]
-  }
-}
-```
-
-In that state, `affected_tests` contains every currently eligible discovered
-test, `directly_affected` and `transitively_affected` are empty because module
-impact is deliberately unavailable, and `attributions` is empty rather than
-inventing import-graph attribution from configuration. The `changed` array
-continues to contain Python path identities only and can therefore be empty for
-a configuration-only change. Consumers must interpret the presence of
-`full_validation` before interpreting the selective arrays. The field is an
-additive schema-version-1 extension; it is omitted from ordinary results.
-
-Why schema version 1 preserves both canonical endpoints and the ordered
-explanation path. Its additive `steps` array records exact import evidence for
-each adjacent path pair:
-
-```json
-{
-  "schema_version": 1,
-  "changed": "src/payments/stripe.py",
-  "affected": "tests/api/test_checkout.py",
-  "path": [
-    "tests/api/test_checkout.py",
-    "src/api/checkout.py",
-    "src/payments/service.py",
-    "src/payments/stripe.py"
-  ],
-  "steps": [
-    {
-      "dependent": "tests/api/test_checkout.py",
-      "dependency": "src/api/checkout.py",
-      "imports": [
-        {
-          "line": 1,
-          "column": 17,
-          "import": {
-            "kind": "from",
-            "module": "api",
-            "name": "checkout",
-            "level": 0
-          }
-        }
-      ]
-    },
-    {
-      "dependent": "src/api/checkout.py",
-      "dependency": "src/payments/service.py",
-      "imports": [
-        {
-          "line": 1,
-          "column": 30,
-          "import": {
-            "kind": "from",
-            "module": "payments.service",
-            "name": "create_payment",
-            "level": 0
-          }
-        }
-      ]
-    },
-    {
-      "dependent": "src/payments/service.py",
-      "dependency": "src/payments/stripe.py",
-      "imports": [
-        {
-          "line": 1,
-          "column": 15,
-          "import": {
-            "kind": "from",
-            "module": null,
-            "name": "stripe",
-            "level": 1
-          }
-        }
-      ]
-    }
-  ]
-}
-```
-
-Incompatible schema changes require a new `schema_version`. Additive fields may
-be introduced within a version, so consumers should ignore unknown fields.
-
-## Exit codes
-
-Urmare uses a small stable exit-code contract suitable for scripts and coding
-agents:
 
 | Code | Meaning |
-| ---: | --- |
-| `0` | Analysis completed successfully, including an empty impact result. |
-| `1` | Urmare encountered an unexpected internal, serialization, or output failure. |
-| `2` | CLI arguments or `[tool.urmare]` configuration are invalid. |
-| `3` | The requested repository, Git state, Python source, or dependency path could not be analyzed. |
+|---:|---|
+| `0` | Analysis completed successfully, including an empty result. |
+| `1` | Unexpected internal, serialization, or output failure. |
+| `2` | Invalid CLI arguments or configuration. |
+| `3` | Repository, Git state, source, or dependency path could not be analyzed. |
 
-Blast-radius size never changes the exit code. With `--json`, successful output
-is JSON on stdout. Every failure leaves stdout empty, writes one actionable
-diagnostic to stderr, and returns the appropriate non-zero code.
+## Performance
 
-Graph edges use this orientation:
+A real-project reference run on 2026-09-03 used 15 independent paired samples
+per project on an Apple M5 Pro with 18 logical cores and 48 GiB of memory. These
+are median end-to-end CLI latencies for Urmare commit
+`daaf7a592bb54ef0ee71b1ed3065caaf9187d67b`:
 
-```text
-A -> B
+| Project | Cold | Warm | One-file incremental |
+|---|---:|---:|---:|
+| Flask | 115.883 ms | 75.254 ms | 78.609 ms |
+| FastAPI | 221.809 ms | 91.923 ms | 100.880 ms |
+| Django | 628.448 ms | 220.379 ms | 230.289 ms |
+| pandas | 456.446 ms | 117.072 ms | 125.998 ms |
+| Apache Airflow | 610.023 ms | 255.853 ms | 262.839 ms |
+
+All cold, warm, and incremental results matched fresh uncached analysis. Each
+content-only incremental run parsed and hashed one file, re-resolved no
+importers, changed no graph edges, and wrote two index records.
+
+These are machine-specific observations, not portable guarantees. See the
+[performance methodology and complete distributions](docs/performance.md#real-project-reference-observation),
+including corpus revisions, binary provenance, work counters, raw-data digest,
+limitations, and the separate synthetic scaling results.
+
+<details>
+<summary>Reproduce the real-project benchmark</summary>
+
+Build the CLI and profiling helper from the same clean commit:
+
+```bash
+cargo build --release --locked -p urmare-cli --bin urmare
+cargo build --release --locked -p urmare-core --example profile_repository
 ```
 
-This means “A depends on B.” If B changes, reverse traversal finds A. The `why`
-output reads naturally from the affected dependent toward the changed
-dependency:
+Prepare, inspect, run 15 samples, and summarize the preserved raw JSON Lines:
 
-```text
-tests/api/test_checkout.py
-  -> src/api/checkout.py
-     via tests/api/test_checkout.py:1:17  from api import checkout
-  -> src/payments/service.py
-     via src/api/checkout.py:1:30  from payments.service import create_payment
-  -> src/payments/stripe.py
-     via src/payments/service.py:1:15  from . import stripe
+```bash
+python3 benchmarks/real_projects/benchmark.py prepare \
+  --work-dir target/real-project-benchmark
+python3 benchmarks/real_projects/benchmark.py dry-run \
+  --work-dir target/real-project-benchmark \
+  --binary target/release/urmare \
+  --profile-helper target/release/examples/profile_repository
+python3 benchmarks/real_projects/benchmark.py run \
+  --work-dir target/real-project-benchmark \
+  --binary target/release/urmare \
+  --profile-helper target/release/examples/profile_repository \
+  --samples 15 \
+  --output target/real-project-benchmark/raw/official.jsonl
+python3 benchmarks/real_projects/benchmark.py summarize \
+  --input target/real-project-benchmark/raw/official.jsonl \
+  --output target/real-project-benchmark/summary/official.md
 ```
 
-## Architecture
+Only `prepare` requires network access. Use `benchmark.py smoke` for the same
+lifecycle against a small offline fixture. The performance document contains
+the complete command and safety details.
 
-The workspace keeps product responsibilities separate:
+</details>
 
-- `urmare-graph`: generic compact node IDs, forward/reverse adjacency, reverse
-  closure, and deterministic shortest paths
-- `urmare-python`: Python file discovery with portable exclusions, module
-  mapping, AST import extraction, relative import handling, traceable local
-  resolution, and convention/configuration-based test discovery
-- `urmare-core`: typed repository configuration, versioned parsed-import and
-  graph-index caches, repository indexing, resolved-edge provenance, graph
-  inspection domain results, impact orchestration, and structured errors,
-  including portable Git command orchestration
-- `urmare-cli`: command parsing and human-readable presentation
+Run the separate deterministic synthetic suite with:
 
-Repository-relative native `PathBuf` values are canonical inside analysis
-results. Absolute paths are confined to filesystem boundaries. CLI paths are
-rendered with `/` separators so logically equivalent output is stable across
-macOS, Linux, and Windows.
+```bash
+cargo bench -p urmare-core --bench synthetic --locked
+```
 
-## Python syntax compatibility and parser choice
-
-The source-syntax target is Python 3.9 through Python 3.14. Urmare uses the
-pure-Rust `ruff_python_parser` and `ruff_python_ast` crates, currently pinned to
-`0.0.7`. Ruff's parser supports Python 3.14 grammar, including template strings,
-without consulting the locally installed Python version or binding Urmare to a
-CPython ABI. Urmare has parser tests covering syntax introduced across the
-target range.
-
-The Ruff parser crates describe themselves as internal components and their API
-is pre-1.0. Urmare therefore pins their versions and should review parser
-upgrades deliberately. Urmare parses the current grammar; it does not yet infer
-a project's minimum Python version or reject newer syntax based on project
-metadata.
-
-## Module-resolution assumptions
-
-Module resolution remains centralized and follows this policy:
-
-- configured `tool.urmare.source-roots` are used when present
-- configured `tool.urmare.test-roots` classify every Python file below them as
-  a test while preserving filename-based pytest discovery elsewhere
-- configured `tool.urmare.exclude` globs remove matching paths before analysis
-- without configuration, a top-level `src/` directory is the production source
-  root; otherwise the repository root is the source root
-- tests and Python files outside every selected source root remain rooted at the
-  repository root
-- the most specific root wins when configured roots overlap
-- `__init__.py` maps to its containing package
-- namespace-style directory paths can map to dotted modules without requiring
-  every parent to contain `__init__.py`
-- local package prefixes are included when Python import execution loads them
-
-Explicit roots supplement rather than burden the zero-configuration path:
-ordinary flat and `src/` repositories do not need a `pyproject.toml` entry.
+Set `URMARE_BENCH_50000=1` to include the 50,000-file case.
 
 ## Current limitations
 
-- discovery and in-memory graph allocation still run for every command; cached
-  identities and resolved edges avoid repeated mapping/resolution work
-- exclusion patterns form one additive set; ordered `!` re-inclusion is not
-  supported
-- no sophisticated monorepo source-root inference
-- static `import` and `from ... import ...` relationships only
-- no dynamic import, re-export, symbol, call, type, fixture, or framework graph
-- test selection is file-level; it does not select individual test functions
-- unresolved diagnostics mean “no repository-local module matched”; installed
-  environments and package indexes are not inspected, and external packages
-  are not indexed
-- no test execution, CI execution, MCP, or hosted integration
+- static `import` and `from ... import ...` relationships only;
+- no dynamic-import, re-export, symbol, call, type, fixture, or framework graph;
+- test selection is file-level, not individual test functions;
+- unresolved imports mean no repository-local module matched; installed
+  environments and package indexes are not inspected;
+- non-Git repositories conservatively rebuild on every invocation;
+- broad impact and complete graph/debug output remain proportional to their
+  result size;
+- no test execution, CI execution, MCP server, or hosted integration.
 
-When a static import could name either a package export or a local submodule,
-Urmare includes the certain local package/module loads. This intentionally
-favors impact recall over minimizing false positives.
+When Python semantics are ambiguous, Urmare conservatively includes certain
+local package and module loads. False positives are preferable to silently
+missing affected code or tests.
 
 ## Development
 
-Run the required checks before submitting changes:
+Build from source with Rust 1.95 or newer:
+
+```bash
+git clone https://github.com/sorginte/urmare.git
+cd urmare
+cargo build --release
+```
+
+Run the required checks before submitting a change:
 
 ```bash
 cargo fmt --all -- --check
@@ -666,31 +272,15 @@ cargo test --workspace --locked
 cargo +1.95.0 check --workspace --all-targets --locked
 ```
 
+The workspace separates the generic graph, Python analysis, application logic,
+and CLI into `urmare-graph`, `urmare-python`, `urmare-core`, and `urmare-cli`.
 Purpose-built fixture repositories live under `fixtures/python-projects/`.
 
-## Performance benchmarks
+Further reading:
 
-Run the deterministic warm-performance benchmark with:
-
-```bash
-cargo bench -p urmare-core --bench synthetic
-```
-
-It generates temporary 1,000- and 10,000-file Python repositories, measures the
-real discovery, parsing, graph-construction, complete-build, and impact paths;
-validates exact parsed-import and graph-index reuse counts; and checks the
-expected graph and affected-test counts. No generated large fixture is
-committed. See [docs/performance.md](docs/performance.md) for the workload,
-phase definitions, reference observation, and standalone generator.
-
-## Next implementation slice
-
-The next recommended slice is true incremental indexing: avoid full discovery
-and in-memory graph reconstruction when repository state proves that only a
-small set of files changed. The existing versioned parsed-import and resolution
-caches provide the safe persisted inputs; the next design must preserve impact
-recall across additions, deletions, renames, configuration changes, and module
-universe changes.
+- [Product specification and design principles](docs/product_spec.md)
+- [Performance methodology and observations](docs/performance.md)
+- [Release process](docs/releasing.md)
 
 ## License
 

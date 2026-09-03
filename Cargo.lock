@@ -752,6 +752,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redb"
+version = "4.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redox_users"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1155,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1169,10 +1178,11 @@ dependencies = [
 
 [[package]]
 name = "urmare-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "directories",
+ "redb",
  "serde",
  "serde_json",
  "tempfile",
@@ -1184,11 +1194,11 @@ dependencies = [
 
 [[package]]
 name = "urmare-graph"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "urmare-python"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "globset",
  "ruff_python_ast",

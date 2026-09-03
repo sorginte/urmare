@@ -5,7 +5,12 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use thiserror::Error;
 use walkdir::{DirEntry, WalkDir};
 
-const IGNORED_DIRECTORIES: &[&str] = &[
+/// Directory component names pruned by ordinary repository discovery.
+///
+/// Consumers that derive a filesystem inventory through another mechanism
+/// can use the same names to avoid enumerating paths that discovery would
+/// unconditionally discard.
+pub const DEFAULT_IGNORED_DIRECTORY_NAMES: &[&str] = &[
     ".git",
     ".venv",
     "venv",
@@ -15,6 +20,13 @@ const IGNORED_DIRECTORIES: &[&str] = &[
     ".pytest_cache",
     ".ruff_cache",
 ];
+
+/// Work performed while validating a complete repository inventory.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiscoveryStats {
+    pub directories_inspected: usize,
+    pub entries_inspected: usize,
+}
 
 /// Errors encountered while discovering repository Python files.
 #[derive(Debug, Error)]
@@ -119,6 +131,14 @@ pub fn discover_python_files_with_excluder(
     root: &Path,
     excluder: &PathExcluder,
 ) -> Result<Vec<PathBuf>, DiscoveryError> {
+    discover_python_files_profiled(root, excluder).map(|(files, _)| files)
+}
+
+/// Discovers Python files and reports the amount of inventory work performed.
+pub fn discover_python_files_profiled(
+    root: &Path,
+    excluder: &PathExcluder,
+) -> Result<(Vec<PathBuf>, DiscoveryStats), DiscoveryError> {
     let metadata = root
         .metadata()
         .map_err(|source| DiscoveryError::RootAccess {
@@ -136,6 +156,7 @@ pub fn discover_python_files_with_excluder(
             source,
         })?;
     let mut files = Vec::new();
+    let mut stats = DiscoveryStats::default();
 
     for entry in WalkDir::new(&root)
         .follow_links(false)
@@ -146,6 +167,10 @@ pub fn discover_python_files_with_excluder(
             root: root.clone(),
             source,
         })?;
+        stats.entries_inspected += 1;
+        if entry.file_type().is_dir() {
+            stats.directories_inspected += 1;
+        }
         if !entry.file_type().is_file() || entry.path().extension() != Some(OsStr::new("py")) {
             continue;
         }
@@ -162,7 +187,20 @@ pub fn discover_python_files_with_excluder(
     }
 
     files.sort();
-    Ok(files)
+    Ok((files, stats))
+}
+
+/// Returns whether a repository-relative Python path is eligible for ordinary
+/// discovery, without performing filesystem access.
+pub fn is_discoverable_python_path(path: &Path, excluder: &PathExcluder) -> bool {
+    path.extension() == Some(OsStr::new("py"))
+        && !path.components().any(|component| {
+            let component = component.as_os_str();
+            DEFAULT_IGNORED_DIRECTORY_NAMES
+                .iter()
+                .any(|ignored| component == OsStr::new(ignored))
+        })
+        && !excluder.is_excluded(path)
 }
 
 fn should_visit(entry: &DirEntry, root: &Path, excluder: &PathExcluder) -> bool {
@@ -171,7 +209,7 @@ fn should_visit(entry: &DirEntry, root: &Path, excluder: &PathExcluder) -> bool 
     }
 
     if entry.file_type().is_dir()
-        && IGNORED_DIRECTORIES
+        && DEFAULT_IGNORED_DIRECTORY_NAMES
             .iter()
             .any(|ignored| entry.file_name() == OsStr::new(ignored))
     {

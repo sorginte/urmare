@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Sorginte"]
@@ -20,6 +20,7 @@ blake3 = { version = "1.8", features = ["pure"] }
 clap = { version = "4.5", features = ["derive"] }
 directories = "6.0"
 globset = "0.4.19"
+redb = "4.2"
 ruff_python_ast = "0.0.7"
 ruff_python_parser = "0.0.7"
 ruff_source_file = "0.0.7"

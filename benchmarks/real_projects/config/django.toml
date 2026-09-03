@@ -1,0 +1,7 @@
+# Deterministic benchmark-only configuration for Django 6.1.
+# This test-runner input is intentionally invalid Python and is not repository
+# source that Django imports as a module.
+[tool.urmare]
+exclude = [
+    "tests/test_runner_apps/tagged/tests_syntax_error.py",
+]

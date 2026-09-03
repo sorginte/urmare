@@ -984,11 +984,12 @@ Target warm performance:
 50,000 files    < 2 s
 ```
 
-Impact traversal after graph construction should generally be measured in milliseconds.
+Impact traversal over an existing persistent index should generally be
+measured in milliseconds and remain proportional to the reachable result.
 
-Initial indexing may take longer. Repeated runs already reuse persistent
-parsed-import and graph-resolution caches, subject to conservative
-invalidation.
+Cold and conservative-fallback indexing may take longer. Supported Git
+repository updates should perform work proportional to the changed files,
+candidate-dependent importers, changed relationships, and requested query.
 
 Do not sacrifice correctness for benchmark screenshots.
 
@@ -996,35 +997,112 @@ Do not sacrifice correctness for benchmark screenshots.
 
 # Incremental Analysis
 
-Urmare currently persists versioned parsed imports, module identities, complete
-import-resolution results, and resolved-edge provenance. These caches avoid
-repeating safe parsing and resolution work, but they do not yet make discovery
-or the in-memory graph incremental: every invocation still discovers the
-repository and constructs a complete immutable graph view.
-
-True incremental discovery and in-memory graph updates remain post-MVP work.
-Instead of rebuilding the complete current view, that future design may use:
+Urmare maintains a versioned persistent current-tree repository index. Durable
+identity uses normalized repository-relative paths and module names, never
+process-local graph node IDs. The index contains:
 
 ```text
-git/status changes
-      ↓
-changed files only
-      ↓
-update graph edges
-      ↓
-recalculate affected subgraph
+canonical repository identity and generation
+index/parser/resolver/configuration compatibility tags
+Git HEAD and dirty/untracked/ignored baseline
+Python path inventory and file metadata/content hash
+module, package, and test classification
+located parsed imports
+resolution candidates, matches, and failure state
+forward dependency relationships and provenance
+reverse dependency relationships
+candidate-module-to-importer relationships
+graph summary counters
 ```
 
-Potential cache inputs:
+The persisted store uses transactional point records. Files and module
+identities are independent records; reverse and candidate relationships are
+one record per pair. A one-edge change must not deserialize or rewrite one
+repository-sized document or adjacency value. The implementation uses redb
+4.2: a maintained, pure-Rust ACID embedded database whose Rust 1.90 minimum is
+compatible with Urmare's Rust 1.95 floor. It has no production transitive,
+native, or system dependency, preserving Windows, macOS, Linux, and
+cross-compilation portability.
+
+For a Git top-level repository, Urmare persists enough baseline state to
+derive a bounded candidate delta from:
 
 ```text
-file path
-mtime
-size
-content hash
-parser version
-configuration hash
+staged changes
+unstaged changes
+untracked files
+ignored Python files included by ordinary discovery
+deleted and renamed files
+commits since the indexed HEAD
+branch switches, rebases, and older checkouts
+previously dirty paths restored to baseline
+untracked files later removed
 ```
+
+Ignored-file enumeration uses negative Git pathspecs for the environment and
+tool-cache directories that ordinary discovery always prunes, including
+`.venv`, `venv`, `.tox`, and Python/tool cache directories. Configured
+exclusion globs are applied to the ignored paths returned by Git. Therefore a
+large ignored `.venv` does not enter the warm delta inventory, while ignored
+Python files that remain eligible under ordinary discovery are still tracked
+for correctness.
+
+A no-change update performs zero Python parses, import resolutions, graph
+mutations, and persistent writes. Changed candidate paths are statted, read,
+and hashed. Content whose hash is unchanged reuses parsed imports. Content
+whose located parsed-import representation is unchanged updates only its file
+record and retains edges and provenance. Import changes replace only that
+file's outgoing relationships and corresponding reverse/candidate pairs.
+
+Module additions, removals, renames, and safe remaps use the persisted
+candidate-to-importer inverted index. Only importers whose candidate module
+sets intersect the changed identities are re-resolved. This preserves the
+recall-first transition between unresolved/external-looking and local imports
+without globally invalidating unrelated imports. Remove-plus-add planning is
+order independent. Cold and incremental paths call the same parser and local
+resolution semantics.
+
+Impact traverses persisted reverse relationships. `why` traverses persisted
+forward records and retains deterministic shortest-path selection and located
+provenance. Wide impact remains proportional to the returned closure. Complete
+graph inspection and complete unresolved diagnostics may scan all relevant
+records because their output is complete. Git deleted and previous-rename
+identities are temporary analysis overlays and are not persisted as current
+files.
+
+Incremental update is used only when the complete relevant delta and module
+mapping are provable. Urmare rebuilds completely for:
+
+```text
+missing or incompatible index state
+parser, resolver, or index-schema changes
+relevant repository-root pyproject.toml changes
+inferred or configured source-root remapping
+Git state that cannot provide a complete safe delta
+non-Git repositories
+```
+
+Git index flags that hide content (`assume-unchanged` and `skip-worktree`),
+tracked submodules, and nested untracked repositories are examples of states
+that require the complete fallback.
+
+The current safety check for hidden Git index flags inspects the tracked Python
+inventory. Parsing, resolution, graph mutation, point persistence, and narrow
+queries remain bounded, but delta detection is not yet strictly independent of
+repository size. Reducing this safety-check cost without weakening discovery
+correctness remains performance work.
+
+Configuration invalidation rebuilds the current-tree index under the current
+valid configuration while retaining the established Git-aware full-validation
+output. A non-Git fast path remains future work because no daemon, filesystem
+watcher, or platform-specific journal is required or assumed.
+
+Transactions are crash safe: readers see a complete committed generation, and
+an interrupted uncommitted update leaves the preceding generation. The store
+serializes writers and permits transactional readers. If the index is locked,
+read-only, truncated, corrupt, or otherwise unavailable, Urmare performs a
+correct uncached analysis and repairs/rebuilds state when safe. Cache failure
+must never prevent correct analysis.
 
 ---
 

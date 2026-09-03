@@ -1,11 +1,17 @@
 //! Urmare's presentation-independent impact-analysis domain.
+//!
+//! Repository analysis is backed by a versioned transactional index. Supported
+//! Git deltas update bounded file and relationship records; unsafe or
+//! unprovable states rebuild completely before serving queries.
 
 mod cache;
 mod config;
 mod error;
 mod git;
 mod graph_cache;
+mod index;
 mod model;
+#[path = "incremental_repository.rs"]
 mod repository;
 
 pub use cache::CacheStats;
@@ -13,13 +19,14 @@ pub use config::{ConfigError, RepositoryConfig};
 pub use error::AnalysisError;
 pub use git::{GitChangeSet, GitDiffAnalysis, GitError, discover_git_repository_root};
 pub use graph_cache::GraphCacheStats;
+pub use index::{IndexBuildKind, IndexFallbackReason, IndexTimings, IndexWorkStats};
 pub use model::{
     DependencyEdge, DependencyPath, DependencyStep, FullValidation, FullValidationReason,
     GitChange, GitChangeKind, GraphInspection, GraphSummary, ImpactAttribution, ImpactResult,
     ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, RepositoryModule,
     ResolvedLocalModule, UnresolvedImport,
 };
-pub use repository::{AnalysisTimings, RepositoryAnalysis};
+pub use repository::{AnalysisTimings, QueryProfile, RepositoryAnalysis};
 pub use urmare_python::{SourceLocation, StaticImport};
 
 use std::path::Path;
