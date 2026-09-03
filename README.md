@@ -713,10 +713,10 @@ Purpose-built fixture repositories live under `fixtures/python-projects/`.
 
 ## Performance benchmarks
 
-Run the deterministic warm-performance benchmark with:
+Run the deterministic synthetic benchmark with:
 
 ```bash
-cargo bench -p urmare-core --bench synthetic
+cargo bench -p urmare-core --bench synthetic --locked
 ```
 
 It generates temporary 1,000- and 10,000-file Git repositories and separately
@@ -727,6 +727,54 @@ analysis. Set `URMARE_BENCH_50000=1` to opt into the 50,000-file case. No
 generated large fixture is committed. See
 [docs/performance.md](docs/performance.md) for the methodology and current
 reference observation.
+
+The separate real-project suite targets pinned releases of Flask, FastAPI,
+Django, pandas, and Apache Airflow. It does not publish or update benchmark
+claims automatically. Build one optimized CLI and its release-mode profiling
+helper from the same clean commit:
+
+```bash
+cargo build --release --locked -p urmare-cli --bin urmare
+cargo build --release --locked -p urmare-core --example profile_repository
+```
+
+Then prepare the pinned corpus while network access is available, inspect the
+fully resolved run without measuring, execute the default 15 paired samples,
+and generate a proposed summary from preserved raw JSON Lines:
+
+```bash
+python3 benchmarks/real_projects/benchmark.py prepare \
+  --work-dir target/real-project-benchmark
+python3 benchmarks/real_projects/benchmark.py dry-run \
+  --work-dir target/real-project-benchmark \
+  --binary target/release/urmare \
+  --profile-helper target/release/examples/profile_repository
+python3 benchmarks/real_projects/benchmark.py run \
+  --work-dir target/real-project-benchmark \
+  --binary target/release/urmare \
+  --profile-helper target/release/examples/profile_repository \
+  --samples 15 \
+  --output target/real-project-benchmark/raw/official.jsonl
+python3 benchmarks/real_projects/benchmark.py summarize \
+  --input target/real-project-benchmark/raw/official.jsonl \
+  --output target/real-project-benchmark/summary/official.md
+```
+
+Only `prepare` needs network access. Exercise the same lifecycle offline on a
+small local fixture with:
+
+```bash
+python3 benchmarks/real_projects/benchmark.py smoke \
+  --work-dir target/real-project-smoke \
+  --binary target/release/urmare \
+  --profile-helper target/release/examples/profile_repository \
+  --output target/real-project-smoke/raw.jsonl
+```
+
+See [docs/performance.md](docs/performance.md) for corpus selection, cache and
+checkout isolation, warm-up policy, raw schema, correctness checks, timing
+boundaries, statistics, resume safety, and limitations. Synthetic scaling and
+public-repository observations remain distinct benchmark families.
 
 ## Next implementation slice
 

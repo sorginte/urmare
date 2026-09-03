@@ -42,6 +42,9 @@ jobs:
       - name: Test packaging contract
         run: python3 -m unittest discover -s tests/packaging -v
 
+      - name: Test real-project benchmark infrastructure offline
+        run: python3 -m unittest discover -s tests/benchmarks -p 'test_*.py' -v
+
       - name: Build release binary
         run: cargo +stable build --release --locked -p urmare-cli
 

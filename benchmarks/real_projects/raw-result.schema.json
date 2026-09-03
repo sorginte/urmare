@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sorginte/urmare/benchmarks/real_projects/raw-result.schema.json",
+  "title": "Urmare real-project raw benchmark record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_type",
+    "run_id",
+    "run",
+    "project_id",
+    "upstream_url",
+    "pinned_upstream_commit",
+    "benchmark_checkout_commit",
+    "release_reference",
+    "changed_file",
+    "sample_number",
+    "scenario",
+    "sample_role",
+    "measured",
+    "valid",
+    "exact_command",
+    "urmare",
+    "timestamp_utc",
+    "machine",
+    "tools",
+    "end_to_end",
+    "internal_timings_ns",
+    "internal_work",
+    "query_profile",
+    "discovered_counts",
+    "result_counts",
+    "normalized_result_sha256",
+    "configuration_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "record_type": { "const": "sample" },
+    "run_id": { "type": "string", "pattern": "^[0-9a-f]{24}$" },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_samples"],
+      "properties": { "requested_samples": { "type": "integer", "minimum": 1 } }
+    },
+    "project_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+    "upstream_url": { "type": "string", "minLength": 1 },
+    "pinned_upstream_commit": { "$ref": "#/$defs/gitSha" },
+    "benchmark_checkout_commit": { "$ref": "#/$defs/gitSha" },
+    "release_reference": { "type": "string", "minLength": 1 },
+    "changed_file": { "type": "string", "pattern": "^[^/].*\\.py$" },
+    "sample_number": { "type": "integer", "minimum": 1 },
+    "scenario": { "enum": ["cold", "warm", "incremental"] },
+    "sample_role": { "enum": ["measurement", "warm_up"] },
+    "measured": { "type": "boolean" },
+    "valid": { "const": true },
+    "exact_command": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": { "type": "string" }
+    },
+    "urmare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_commit", "version", "binary_absolute_path", "binary_sha256"],
+      "properties": {
+        "git_commit": { "$ref": "#/$defs/gitSha" },
+        "version": { "type": "string", "minLength": 1 },
+        "binary_absolute_path": { "type": "string", "minLength": 1 },
+        "binary_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "timestamp_utc": { "type": "string", "format": "date-time" },
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operating_system",
+        "os_version",
+        "architecture",
+        "cpu_description",
+        "logical_core_count",
+        "memory_bytes"
+      ],
+      "properties": {
+        "operating_system": { "type": "string" },
+        "os_version": { "type": "string" },
+        "architecture": { "type": "string" },
+        "cpu_description": { "type": ["string", "null"] },
+        "logical_core_count": { "type": ["integer", "null"], "minimum": 1 },
+        "memory_bytes": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rustc_version_used_for_helper", "git_version"],
+      "properties": {
+        "rustc_version_used_for_helper": { "type": "string", "minLength": 1 },
+        "git_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "end_to_end": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elapsed_ns", "exit_status", "stdout", "stderr"],
+      "properties": {
+        "elapsed_ns": { "$ref": "#/$defs/nonNegativeInteger" },
+        "exit_status": { "const": 0 },
+        "stdout": { "type": "string" },
+        "stderr": { "const": "" }
+      }
+    },
+    "internal_timings_ns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_load", "git_delta_detection", "update", "persistence", "index_total"],
+      "properties": {
+        "index_load": { "$ref": "#/$defs/nonNegativeInteger" },
+        "git_delta_detection": { "$ref": "#/$defs/nonNegativeInteger" },
+        "update": { "$ref": "#/$defs/nonNegativeInteger" },
+        "persistence": { "$ref": "#/$defs/nonNegativeInteger" },
+        "index_total": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "internal_work": { "$ref": "#/$defs/workCounters" },
+    "query_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_open", "impact_query", "recovery_fallback", "query_total", "records_read"],
+      "properties": {
+        "index_open": { "$ref": "#/$defs/nonNegativeInteger" },
+        "impact_query": { "$ref": "#/$defs/nonNegativeInteger" },
+        "recovery_fallback": { "$ref": "#/$defs/nonNegativeInteger" },
+        "query_total": { "$ref": "#/$defs/nonNegativeInteger" },
+        "records_read": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "discovered_counts": { "$ref": "#/$defs/countObject" },
+    "result_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directly_affected_modules",
+        "transitively_affected_modules",
+        "affected_modules",
+        "affected_tests"
+      ],
+      "properties": {
+        "directly_affected_modules": { "$ref": "#/$defs/nonNegativeInteger" },
+        "transitively_affected_modules": { "$ref": "#/$defs/nonNegativeInteger" },
+        "affected_modules": { "$ref": "#/$defs/nonNegativeInteger" },
+        "affected_tests": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "normalized_result_sha256": { "$ref": "#/$defs/sha256" },
+    "configuration_sha256": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0 },
+    "countObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python_files", "test_files", "modules", "import_edges", "unresolved_imports"],
+      "properties": {
+        "python_files": { "$ref": "#/$defs/nonNegativeInteger" },
+        "test_files": { "$ref": "#/$defs/nonNegativeInteger" },
+        "modules": { "$ref": "#/$defs/nonNegativeInteger" },
+        "import_edges": { "$ref": "#/$defs/nonNegativeInteger" },
+        "unresolved_imports": { "$ref": "#/$defs/nonNegativeInteger" }
+      }
+    },
+    "workCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directories_inspected",
+        "inventory_entries_inspected",
+        "files_statted",
+        "files_read",
+        "files_hashed",
+        "files_parsed",
+        "modules_added",
+        "modules_removed",
+        "modules_remapped",
+        "modules_reused",
+        "importers_reresolved",
+        "records_added",
+        "records_removed",
+        "forward_edges_added",
+        "forward_edges_removed",
+        "reverse_edges_added",
+        "reverse_edges_removed",
+        "index_records_read",
+        "index_records_written",
+        "bytes_written",
+        "build_kind",
+        "fallback_reason"
+      ],
+      "properties": {
+        "directories_inspected": { "$ref": "#/$defs/nonNegativeInteger" },
+        "inventory_entries_inspected": { "$ref": "#/$defs/nonNegativeInteger" },
+        "files_statted": { "$ref": "#/$defs/nonNegativeInteger" },
+        "files_read": { "$ref": "#/$defs/nonNegativeInteger" },
+        "files_hashed": { "$ref": "#/$defs/nonNegativeInteger" },
+        "files_parsed": { "$ref": "#/$defs/nonNegativeInteger" },
+        "modules_added": { "$ref": "#/$defs/nonNegativeInteger" },
+        "modules_removed": { "$ref": "#/$defs/nonNegativeInteger" },
+        "modules_remapped": { "$ref": "#/$defs/nonNegativeInteger" },
+        "modules_reused": { "$ref": "#/$defs/nonNegativeInteger" },
+        "importers_reresolved": { "$ref": "#/$defs/nonNegativeInteger" },
+        "records_added": { "$ref": "#/$defs/nonNegativeInteger" },
+        "records_removed": { "$ref": "#/$defs/nonNegativeInteger" },
+        "forward_edges_added": { "$ref": "#/$defs/nonNegativeInteger" },
+        "forward_edges_removed": { "$ref": "#/$defs/nonNegativeInteger" },
+        "reverse_edges_added": { "$ref": "#/$defs/nonNegativeInteger" },
+        "reverse_edges_removed": { "$ref": "#/$defs/nonNegativeInteger" },
+        "index_records_read": { "$ref": "#/$defs/nonNegativeInteger" },
+        "index_records_written": { "$ref": "#/$defs/nonNegativeInteger" },
+        "bytes_written": { "$ref": "#/$defs/nonNegativeInteger" },
+        "build_kind": { "enum": ["full", "incremental", "reused"] },
+        "fallback_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "cache_disabled",
+            "missing_index",
+            "incompatible_index",
+            "configuration_changed",
+            "source_root_remapped",
+            "non_git_repository",
+            "git_state_unavailable",
+            "index_locked",
+            "index_corrupt",
+            "storage_failure"
+          ]
+        }
+      }
+    }
+  }
+}
