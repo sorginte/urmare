@@ -107,11 +107,11 @@ atomic commit, and corruption detection in one portable dependency.
 
 ## Real-project benchmark methodology
 
-The real-project suite is publication infrastructure, not a source of scores in
-this document. It is driven by
+The real-project suite is publication infrastructure. It is driven by
 `benchmarks/real_projects/benchmark.py` and the reviewed, machine-readable
 `benchmarks/real_projects/corpus.json`. The runner uses only the Python standard
-library. It never contacts a hosted Sorginte service.
+library. It never contacts a hosted Sorginte service. The reviewed reference
+observation below follows this methodology.
 
 ### Corpus and file selection
 
@@ -308,6 +308,144 @@ python3 benchmarks/real_projects/benchmark.py smoke \
   Python layout, import pattern, operating system, or filesystem.
 - Static file-level import analysis and the explicit Airflow core boundary
   remain subject to the product limitations documented below.
+
+## Real-project reference observation
+
+This is a development observation from the v0.2.0 incremental-indexing branch,
+not a cross-machine guarantee. It was recorded on 2026-09-03 from Urmare commit
+`daaf7a592bb54ef0ee71b1ed3065caaf9187d67b` with one release-mode binary. The
+package metadata still reported version 0.1.1 because the benchmark work did
+not change package versions; the full Git commit is the authoritative source
+identity for this observation.
+
+The host was an Apple M5 Pro with 18 logical cores and 48 GiB of memory, running
+macOS 26.6.2 on ARM64. The helper was built with
+`rustc 1.97.1 (8bab26f4f 2026-07-14)`, and Git was
+`2.50.1 (Apple Git-155)`. The binary SHA-256 was
+`d7c01ae163fabc060bec0d6681b67a55ccb914261e8011a0a554c5185be4b774`.
+
+Run `c9aaceb78e6075b04a68fa50` contains 15 independently prepared paired
+samples per project: 225 measured scenario records and 75 explicitly discarded
+warm-up records. It ran from 2026-09-03 07:26:54Z through 07:31:25Z. The
+preserved 81,689,420-byte JSON Lines artifact is
+`target/real-project-benchmark/raw/official-daaf7a592bb5-complete-metadata.jsonl`;
+its SHA-256 is
+`650b5bc82196b93bf2c92c9173ece8d00c1efc08292caf8c1041d5e1b670ec26`.
+The deterministic Markdown and JSON summaries are in the adjacent
+`target/real-project-benchmark/summary/` directory. These generated artifacts
+are benchmark outputs and are intentionally ignored by Git; retain or publish
+the raw artifact with any external use of these results.
+
+All latency values below are milliseconds. `IQR` is p25-p75. The end-to-end
+table measures the exact CLI process and is not calculated from the internal
+phase totals.
+
+### End-to-end CLI latency
+
+| Project | Scenario | n | Median | IQR | p95 | Min-max |
+|---|---|---:|---:|---:|---:|---:|
+| Flask | Cold | 15 | 115.883 | 114.511-117.665 | 124.157 | 113.389-127.300 |
+| Flask | Warm | 15 | 75.254 | 73.872-76.500 | 78.671 | 72.856-79.113 |
+| Flask | Incremental | 15 | 78.609 | 76.457-81.980 | 85.447 | 75.957-86.007 |
+| FastAPI | Cold | 15 | 221.809 | 217.900-224.489 | 298.061 | 208.141-298.436 |
+| FastAPI | Warm | 15 | 91.923 | 90.624-92.701 | 172.271 | 90.384-177.762 |
+| FastAPI | Incremental | 15 | 100.880 | 99.035-102.862 | 109.857 | 95.588-112.802 |
+| Django | Cold | 15 | 628.448 | 624.825-634.940 | 703.457 | 618.037-706.696 |
+| Django | Warm | 15 | 220.379 | 219.920-222.269 | 298.505 | 218.368-329.329 |
+| Django | Incremental | 15 | 230.289 | 229.862-232.105 | 241.253 | 226.750-242.308 |
+| pandas | Cold | 15 | 456.446 | 452.262-463.127 | 557.454 | 448.502-629.756 |
+| pandas | Warm | 15 | 117.072 | 115.142-118.067 | 195.405 | 112.467-271.490 |
+| pandas | Incremental | 15 | 125.998 | 124.716-126.838 | 131.451 | 122.195-135.358 |
+| Apache Airflow | Cold | 15 | 610.023 | 599.653-669.220 | 694.693 | 581.647-695.181 |
+| Apache Airflow | Warm | 15 | 255.853 | 253.611-320.491 | 346.366 | 249.142-356.443 |
+| Apache Airflow | Incremental | 15 | 262.839 | 260.167-264.596 | 265.972 | 259.225-266.349 |
+
+### Internal index/update latency
+
+This separately profiled layer includes index load, Git delta detection, update
+planning/execution, and persistence. It is not a component measurement from the
+timed CLI process.
+
+| Project | Scenario | n | Median | IQR | p95 | Min-max |
+|---|---|---:|---:|---:|---:|---:|
+| Flask | Cold | 15 | 38.204 | 37.136-38.772 | 41.009 | 33.645-41.542 |
+| Flask | Warm | 15 | 60.225 | 59.822-61.129 | 65.647 | 58.948-72.154 |
+| Flask | Incremental | 15 | 65.039 | 62.047-66.884 | 77.132 | 59.149-79.706 |
+| FastAPI | Cold | 15 | 103.975 | 103.004-106.316 | 116.242 | 100.278-118.628 |
+| FastAPI | Warm | 15 | 70.119 | 69.060-71.146 | 151.223 | 68.382-156.239 |
+| FastAPI | Incremental | 15 | 78.591 | 77.094-79.037 | 83.276 | 75.678-90.403 |
+| Django | Cold | 15 | 373.985 | 371.437-378.818 | 384.684 | 368.656-390.365 |
+| Django | Warm | 15 | 167.282 | 166.087-171.281 | 243.484 | 160.417-257.309 |
+| Django | Incremental | 15 | 169.082 | 167.553-169.638 | 173.787 | 164.525-180.994 |
+| pandas | Cold | 15 | 321.298 | 317.873-323.043 | 327.717 | 316.182-329.285 |
+| pandas | Warm | 15 | 67.046 | 66.186-71.293 | 149.487 | 64.805-226.283 |
+| pandas | Incremental | 15 | 78.865 | 77.828-80.567 | 82.191 | 75.303-83.007 |
+| Apache Airflow | Cold | 15 | 313.768 | 310.996-315.696 | 323.811 | 309.190-324.704 |
+| Apache Airflow | Warm | 15 | 204.313 | 199.126-262.273 | 287.814 | 196.885-293.286 |
+| Apache Airflow | Incremental | 15 | 205.749 | 205.077-207.629 | 215.459 | 202.938-216.966 |
+
+### Internal impact-query latency
+
+| Project | Scenario | n | Median | IQR | p95 | Min-max |
+|---|---|---:|---:|---:|---:|---:|
+| Flask | Cold | 15 | 1.093 | 1.074-1.109 | 1.132 | 1.060-1.145 |
+| Flask | Warm | 15 | 1.113 | 1.098-1.145 | 1.162 | 1.088-1.172 |
+| Flask | Incremental | 15 | 1.119 | 1.104-1.130 | 1.153 | 1.057-1.164 |
+| FastAPI | Cold | 15 | 7.555 | 7.466-7.779 | 9.611 | 7.268-9.661 |
+| FastAPI | Warm | 15 | 7.350 | 7.325-7.417 | 7.643 | 7.166-7.694 |
+| FastAPI | Incremental | 15 | 7.429 | 7.290-7.496 | 7.662 | 7.216-7.786 |
+| Django | Cold | 15 | 43.339 | 43.103-43.710 | 44.242 | 42.606-44.471 |
+| Django | Warm | 15 | 43.621 | 43.354-43.728 | 50.332 | 42.954-50.643 |
+| Django | Incremental | 15 | 43.268 | 43.050-43.719 | 43.943 | 42.829-43.952 |
+| pandas | Cold | 15 | 32.075 | 31.737-32.265 | 32.592 | 31.494-32.761 |
+| pandas | Warm | 15 | 31.558 | 31.419-31.701 | 31.995 | 31.262-32.192 |
+| pandas | Incremental | 15 | 31.512 | 31.353-31.672 | 33.961 | 31.002-37.277 |
+| Apache Airflow | Cold | 15 | 40.572 | 40.469-40.763 | 43.482 | 40.159-47.348 |
+| Apache Airflow | Warm | 15 | 40.445 | 40.246-40.734 | 41.063 | 40.027-41.129 |
+| Apache Airflow | Incremental | 15 | 40.397 | 40.324-40.681 | 41.017 | 40.099-41.026 |
+
+### Deterministic work and result validation
+
+The work counters did not vary within any project/scenario group, so the table
+reports their exact medians. `Edges +/−` shows forward-edge mutations; reverse
+edge additions matched forward-edge additions for cold builds, and both
+directions had zero mutations for warm and content-only incremental builds.
+
+| Project | Scenario | Parsed | Hashed | Re-resolved | Edges +/− | Records written | Bytes written |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Flask | Cold | 83 | 83 | 83 | 204/0 | 1,469 | 382,825 |
+| Flask | Warm | 0 | 0 | 0 | 0/0 | 0 | 0 |
+| Flask | Incremental | 1 | 1 | 0 | 0/0 | 2 | 32,724 |
+| FastAPI | Cold | 1,118 | 1,118 | 1,118 | 2,156/0 | 12,421 | 3,317,209 |
+| FastAPI | Warm | 0 | 0 | 0 | 0/0 | 0 | 0 |
+| FastAPI | Incremental | 1 | 1 | 0 | 0/0 | 2 | 44,123 |
+| Django | Cold | 2,916 | 2,916 | 2,916 | 16,159/0 | 57,906 | 19,224,495 |
+| Django | Warm | 0 | 0 | 0 | 0/0 | 0 | 0 |
+| Django | Incremental | 1 | 1 | 0 | 0/0 | 2 | 40,759 |
+| pandas | Cold | 1,514 | 1,514 | 1,514 | 8,349/0 | 38,557 | 13,872,030 |
+| pandas | Warm | 0 | 0 | 0 | 0/0 | 0 | 0 |
+| pandas | Incremental | 1 | 1 | 0 | 0/0 | 2 | 190,980 |
+| Apache Airflow | Cold | 1,716 | 1,716 | 1,716 | 11,973/0 | 56,969 | 22,625,782 |
+| Apache Airflow | Warm | 0 | 0 | 0 | 0/0 | 0 | 0 |
+| Apache Airflow | Incremental | 1 | 1 | 0 | 0/0 | 2 | 55,422 |
+
+Every project produced one normalized result hash across all 45 measured
+records, proving that cold, warm, and content-only incremental results agreed.
+The affected counts exclude affected tests from the module count.
+
+| Project | Python files | Test files | Direct modules | Transitive modules | Affected modules | Affected tests | Normalized result SHA-256 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Flask | 83 | 27 | 7 | 37 | 44 | 24 | `7fbe9ecca5096a4190f887fb4ef2f256961282b45d3720a26c51e3648c2e9581` |
+| FastAPI | 1,118 | 498 | 11 | 354 | 365 | 467 | `a1223c8cc40069eaf118f598a7f908734f34880bdcaf0fab7b530381dcef377a` |
+| Django | 2,916 | 627 | 12 | 1,476 | 1,488 | 624 | `f62f1a528e049b1995716a91438c2bbce491b9563c24d79514b907831ef04e18` |
+| pandas | 1,514 | 972 | 18 | 364 | 382 | 960 | `4690af8d4acdac821ca06922dd70c30ad55c5485a42202f66a82cc260493dc63` |
+| Apache Airflow | 1,716 | 686 | 36 | 689 | 725 | 494 | `b2069f52c8c903eade08b332579302e9191d2edf6d772e003501a0a561c9e227` |
+
+The warm and incremental medians are intentionally reported independently.
+A content-only edit adds one stat/read/hash/parse and two point-record writes;
+it is not expected to be faster than a no-change invocation. Higher p95/max
+values in several groups illustrate the host-noise limitation above and are
+retained rather than filtered.
 
 ## Synthetic reference observation
 
