@@ -24,7 +24,8 @@ pub use model::{
     DependencyEdge, DependencyPath, DependencyStep, FullValidation, FullValidationReason,
     GitChange, GitChangeKind, GraphInspection, GraphSummary, ImpactAttribution, ImpactResult,
     ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, RepositoryModule,
-    ResolvedLocalModule, UnresolvedImport,
+    ResolvedLocalModule, UnresolvedImport, ValidationMode, ValidationPlan, ValidationStep,
+    ValidationStepKind,
 };
 pub use repository::{AnalysisTimings, QueryProfile, RepositoryAnalysis};
 pub use urmare_python::{SourceLocation, StaticImport};

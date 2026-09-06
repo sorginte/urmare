@@ -8,10 +8,11 @@ use serde::Serialize;
 use urmare_core::{
     DependencyEdge, DependencyPath, FullValidationReason, GraphInspection, GraphSummary,
     ImpactResult, ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, StaticImport,
-    UnresolvedImport, display_repository_path,
+    UnresolvedImport, ValidationMode, ValidationPlan, ValidationStepKind, display_repository_path,
 };
 
 const SCHEMA_VERSION: u32 = 1;
+const PLAN_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize)]
 struct GraphOutput {
@@ -104,6 +105,32 @@ struct TestSelectionOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     full_validation: Option<FullValidationOutput>,
     attributions: Vec<AttributionOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanOutput {
+    schema_version: u32,
+    changed: Vec<String>,
+    directly_affected: Vec<String>,
+    transitively_affected: Vec<String>,
+    affected_tests: Vec<String>,
+    validation: ValidationOutput,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full_validation: Option<FullValidationOutput>,
+    attributions: Vec<AttributionOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationOutput {
+    mode: &'static str,
+    steps: Vec<ValidationStepOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidationStepOutput {
+    kind: &'static str,
+    program: String,
+    args: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +227,45 @@ pub fn tests(impact: &ImpactResult) -> Result<String, serde_json::Error> {
                 })
                 .collect()
         },
+    })
+}
+
+/// Serializes an agent-facing validation plan using its independent schema version 1.
+pub fn plan(plan: &ValidationPlan) -> Result<String, serde_json::Error> {
+    let impact = &plan.impact;
+    pretty_json(&PlanOutput {
+        schema_version: PLAN_SCHEMA_VERSION,
+        changed: paths(&impact.changed),
+        directly_affected: paths(&impact.directly_affected),
+        transitively_affected: paths(&impact.transitively_affected),
+        affected_tests: paths(&impact.affected_tests),
+        validation: ValidationOutput {
+            mode: match plan.mode {
+                ValidationMode::Selective => "selective",
+                ValidationMode::None => "none",
+                ValidationMode::Full => "full",
+            },
+            steps: plan
+                .steps
+                .iter()
+                .map(|step| ValidationStepOutput {
+                    kind: match step.kind {
+                        ValidationStepKind::Pytest => "pytest",
+                    },
+                    program: step.program.clone(),
+                    args: paths(&step.args),
+                })
+                .collect(),
+        },
+        full_validation: full_validation(impact),
+        attributions: impact
+            .attributions
+            .iter()
+            .map(|attribution| AttributionOutput {
+                affected: display_repository_path(&attribution.affected),
+                caused_by: paths(&attribution.caused_by),
+            })
+            .collect(),
     })
 }
 

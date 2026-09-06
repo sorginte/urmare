@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use urmare_python::{SourceLocation, StaticImport};
 
+use crate::display_repository_path;
+
 /// High-level repository graph statistics.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphSummary {
@@ -146,6 +148,86 @@ impl ImpactResult {
     }
 }
 
+/// How a validation plan should invoke the repository's pytest environment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidationMode {
+    /// Run only the affected pytest files selected by impact analysis.
+    Selective,
+    /// No pytest files are affected, so no validation step is required.
+    None,
+    /// Selective analysis is unsafe, so pytest must discover the complete suite.
+    Full,
+}
+
+/// The executable family represented by one validation step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValidationStepKind {
+    Pytest,
+}
+
+/// One structured validation action for an agent or CI system to execute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidationStep {
+    pub kind: ValidationStepKind,
+    pub program: String,
+    /// Repository-relative targets. An empty list requests full pytest discovery.
+    pub args: Vec<PathBuf>,
+}
+
+/// A deterministic, presentation-independent validation plan derived from impact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidationPlan {
+    /// The one impact result from which every validation decision was derived.
+    pub impact: ImpactResult,
+    pub mode: ValidationMode,
+    pub steps: Vec<ValidationStep>,
+    /// Every affected pytest file in deterministic repository-relative order.
+    pub selected_test_targets: Vec<PathBuf>,
+}
+
+impl ValidationPlan {
+    /// Derives pytest validation requirements without performing another analysis.
+    pub fn from_impact(impact: ImpactResult) -> Self {
+        let mut selected_test_targets = impact.affected_tests.clone();
+        selected_test_targets.sort_by_key(|path| display_repository_path(path));
+        selected_test_targets.dedup();
+
+        let (mode, steps) = if impact.full_validation.is_some() {
+            (
+                ValidationMode::Full,
+                vec![ValidationStep {
+                    kind: ValidationStepKind::Pytest,
+                    program: "pytest".to_owned(),
+                    args: Vec::new(),
+                }],
+            )
+        } else if selected_test_targets.is_empty() {
+            (ValidationMode::None, Vec::new())
+        } else {
+            (
+                ValidationMode::Selective,
+                vec![ValidationStep {
+                    kind: ValidationStepKind::Pytest,
+                    program: "pytest".to_owned(),
+                    args: selected_test_targets.clone(),
+                }],
+            )
+        };
+
+        Self {
+            impact,
+            mode,
+            steps,
+            selected_test_targets,
+        }
+    }
+
+    /// Conservative fallback details, when full pytest discovery is required.
+    pub fn full_validation(&self) -> Option<&FullValidation> {
+        self.impact.full_validation.as_ref()
+    }
+}
+
 /// Why a Git-aware analysis must conservatively validate the full repository.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FullValidationReason {
@@ -185,4 +267,90 @@ pub struct GitChange {
     pub path: PathBuf,
     /// Previous path for a rename.
     pub previous_path: Option<PathBuf>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FullValidation, FullValidationReason, ImpactResult, ValidationMode, ValidationPlan,
+        ValidationStep, ValidationStepKind,
+    };
+    use std::path::PathBuf;
+
+    fn impact(tests: &[&str]) -> ImpactResult {
+        ImpactResult {
+            changed: vec![PathBuf::from("src/pkg/core.py")],
+            directly_affected: Vec::new(),
+            transitively_affected: Vec::new(),
+            affected_tests: tests.iter().map(PathBuf::from).collect(),
+            attributions: Vec::new(),
+            full_validation: None,
+        }
+    }
+
+    #[test]
+    fn validation_plan_selects_tests_in_deterministic_order() {
+        let plan = ValidationPlan::from_impact(impact(&[
+            "tests/test_z.py",
+            "tests/test_a.py",
+            "tests/test_z.py",
+        ]));
+
+        let targets = vec![
+            PathBuf::from("tests/test_a.py"),
+            PathBuf::from("tests/test_z.py"),
+        ];
+        assert_eq!(plan.mode, ValidationMode::Selective);
+        assert_eq!(plan.selected_test_targets, targets);
+        assert_eq!(
+            plan.steps,
+            vec![ValidationStep {
+                kind: ValidationStepKind::Pytest,
+                program: "pytest".to_owned(),
+                args: targets,
+            }]
+        );
+        assert!(plan.full_validation().is_none());
+    }
+
+    #[test]
+    fn validation_plan_omits_steps_when_no_tests_are_affected() {
+        let plan = ValidationPlan::from_impact(impact(&[]));
+
+        assert_eq!(plan.mode, ValidationMode::None);
+        assert!(plan.selected_test_targets.is_empty());
+        assert!(plan.steps.is_empty());
+        assert!(plan.full_validation().is_none());
+    }
+
+    #[test]
+    fn validation_plan_uses_targetless_pytest_for_full_validation() {
+        let mut impact = impact(&["tests/test_core.py"]);
+        impact.full_validation = Some(FullValidation {
+            reason: FullValidationReason::ConfigurationChanged,
+            configuration_paths: vec![PathBuf::from("pyproject.toml")],
+        });
+
+        let plan = ValidationPlan::from_impact(impact);
+
+        assert_eq!(plan.mode, ValidationMode::Full);
+        assert_eq!(
+            plan.selected_test_targets,
+            vec![PathBuf::from("tests/test_core.py")]
+        );
+        assert_eq!(
+            plan.steps,
+            vec![ValidationStep {
+                kind: ValidationStepKind::Pytest,
+                program: "pytest".to_owned(),
+                args: Vec::new(),
+            }]
+        );
+        assert_eq!(
+            plan.full_validation()
+                .expect("full validation details")
+                .reason,
+            FullValidationReason::ConfigurationChanged
+        );
+    }
 }

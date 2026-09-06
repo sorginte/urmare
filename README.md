@@ -16,6 +16,7 @@ imports and favors impact recall over aggressive test reduction.
 
 - finds direct and transitive dependents of one or more changed Python files;
 - selects affected pytest files;
+- produces structured validation plans for coding agents and CI;
 - analyzes staged, unstaged, untracked, committed, deleted, and renamed Git
   changes;
 - explains each result with a deterministic dependency path and import
@@ -55,6 +56,9 @@ Standalone archives for the same targets are available from GitHub Releases.
 Run Urmare from the repository you want to analyze:
 
 ```bash
+# What should an agent validate after editing the working tree?
+urmare plan --changed --json
+
 # What depends on this file?
 urmare impact src/payments/stripe.py
 
@@ -69,6 +73,7 @@ Analyze more than one explicit change at once:
 
 ```bash
 urmare impact src/payments/models.py src/payments/stripe.py
+urmare plan src/payments/models.py src/payments/stripe.py --json
 ```
 
 Analyze the current Git working tree or all branch changes since a merge base:
@@ -76,9 +81,11 @@ Analyze the current Git working tree or all branch changes since a merge base:
 ```bash
 urmare impact --changed
 urmare tests --affected --changed
+urmare plan --changed --json
 
 urmare impact --git-diff origin/main
 urmare tests --affected --git-diff origin/main
+urmare plan --git-diff origin/main --json
 ```
 
 Inspect the repository graph when a mapping or result is surprising:
@@ -98,6 +105,72 @@ Common options:
 Explicit files, `--changed`, and `--git-diff` are alternative change sources
 and cannot be combined. Invalid or unindexed paths fail with an actionable
 diagnostic instead of returning a partial result.
+
+## Agent validation workflow
+
+`plan` is the recommended agent-facing entry point. It returns affected code,
+selected pytest files, attribution, and structured validation steps in one
+deterministic result:
+
+```text
+agent edits Python code
+    ↓
+urmare plan --changed --json
+    ↓
+agent runs every validation step
+    ↓
+agent uses urmare why when an impact path needs investigation
+    ↓
+CI independently recomputes the plan
+```
+
+Copy this instruction into a terminal-capable coding agent:
+
+```text
+After modifying Python code:
+
+1. Run `urmare plan --changed --json`.
+2. Execute every validation step using the repository’s established environment.
+3. If the plan requires full validation, run the complete test suite.
+4. Do not claim completion until the required validation succeeds.
+5. Use `urmare why` when an affected relationship needs explanation.
+```
+
+For example, after an agent edits `src/payments/service.py`, Urmare may return:
+
+```json
+{
+  "schema_version": 1,
+  "changed": ["src/payments/service.py"],
+  "directly_affected": ["src/api/checkout.py"],
+  "transitively_affected": ["tests/api/test_checkout.py"],
+  "affected_tests": ["tests/api/test_checkout.py"],
+  "validation": {
+    "mode": "selective",
+    "steps": [{
+      "kind": "pytest",
+      "program": "pytest",
+      "args": ["tests/api/test_checkout.py"]
+    }]
+  },
+  "attributions": [{
+    "affected": "tests/api/test_checkout.py",
+    "caused_by": ["src/payments/service.py"]
+  }]
+}
+```
+
+If that repository uses uv, the agent then runs its established environment
+with the supplied target:
+
+```bash
+uv run pytest tests/api/test_checkout.py
+```
+
+Urmare plans validation but does not execute pytest. This is a CLI and JSON
+contract, not a native Codex, Claude Code, Cursor, or MCP integration. Agents
+and CI remain responsible for invoking the repository's established test
+environment.
 
 ## Configuration
 
@@ -161,6 +234,11 @@ An impact result has this concise shape:
   ]
 }
 ```
+
+`plan --json` has its own schema version 1. Its `validation.mode` is
+`selective`, `none`, or `full`; steps contain a program and argument array, not
+a shell command. In `full` mode the pytest step has no file arguments and the
+existing `full_validation` object explains why complete discovery is required.
 
 | Code | Meaning |
 |---:|---|
