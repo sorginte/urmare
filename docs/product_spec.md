@@ -1323,19 +1323,19 @@ canonical Python-tool installation channel.
 A release such as:
 
 ```text
-v0.1.0
+v0.3.0
 ```
 
 corresponds to these platform-specific archives:
 
 ```text
-urmare-v0.1.0-aarch64-apple-darwin.tar.gz
-urmare-v0.1.0-x86_64-apple-darwin.tar.gz
+urmare-v0.3.0-aarch64-apple-darwin.tar.gz
+urmare-v0.3.0-x86_64-apple-darwin.tar.gz
 
-urmare-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-urmare-v0.1.0-aarch64-unknown-linux-gnu.tar.gz
+urmare-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+urmare-v0.3.0-aarch64-unknown-linux-gnu.tar.gz
 
-urmare-v0.1.0-x86_64-pc-windows-msvc.zip
+urmare-v0.3.0-x86_64-pc-windows-msvc.zip
 ```
 
 The public GitHub Release also contains `SHA256SUMS`, but does not contain

@@ -357,6 +357,7 @@ Purpose-built fixture repositories live under `fixtures/python-projects/`.
 Further reading:
 
 - [Product specification and design principles](docs/product_spec.md)
+- [Roadmap and upcoming milestones](docs/roadmap.md)
 - [Performance methodology and observations](docs/performance.md)
 - [Release process](docs/releasing.md)
 
