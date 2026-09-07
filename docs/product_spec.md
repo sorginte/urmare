@@ -312,12 +312,34 @@ tests/api/test_checkout.py
 
 ---
 
+## Story 4: Agent validation plan
+
+After editing Python code, a coding agent runs:
+
+```bash
+urmare plan --changed --json
+```
+
+Urmare returns one deterministic plan containing the impact result, selected
+pytest files, and structured validation steps. The agent invokes those steps
+through the repository's established environment. Urmare does not execute
+pytest.
+
+The validation mode is:
+
+- `selective` when one or more affected pytest files are selected;
+- `none` when no pytest files are selected;
+- `full` when selective analysis is unsafe and complete pytest discovery is
+  required.
+
+---
+
 ## Future Story: CI integration
 
 A CI workflow runs:
 
 ```bash
-urmare impact --git-diff origin/main --json
+urmare plan --git-diff origin/main --json
 ```
 
 and uses the structured result to determine which validations should execute.
@@ -330,7 +352,7 @@ The MVP proves one hypothesis:
 
 > Static Python import analysis can reliably identify a useful blast radius and reduce unnecessary test execution with near-zero configuration.
 
-The MVP consists of five capabilities.
+The implemented product foundation consists of six capabilities.
 
 ---
 
@@ -422,6 +444,15 @@ The user should be able to inspect at least one valid dependency path.
 
 ---
 
+## 6. Validation planning
+
+Derive a pytest validation plan directly from the existing impact result. The
+plan is structural and deterministic: it identifies the validation mode,
+ordered test targets, and ordered steps without rendering or executing a shell
+command.
+
+---
+
 # MVP Commands
 
 The current CLI grammar is:
@@ -429,6 +460,7 @@ The current CLI grammar is:
 ```text
 urmare [--root PATH] graph [--json|--all] [--debug [--focus FILE]]
 urmare [--root PATH] impact <FILE...|--changed|--git-diff BASE> [--json|--all]
+urmare [--root PATH] plan <FILE...|--changed|--git-diff BASE> [--json]
 urmare [--root PATH] tests --affected <FILE...|--changed|--git-diff BASE> [--json]
 urmare [--root PATH] why CHANGED_FILE AFFECTED_FILE [--changed|--git-diff BASE] [--json]
 ```
@@ -554,6 +586,45 @@ files. `--git-diff <base>` additionally includes committed branch changes since
 the merge base of `<base>` and `HEAD`. When no explicit `--root` is supplied,
 Git-aware impact discovers the containing Git repository top level so it can be
 invoked from a subdirectory.
+
+---
+
+## `urmare plan`
+
+Example:
+
+```bash
+urmare plan src/payments/stripe.py
+urmare plan src/payments/stripe.py src/payments/models.py --json
+urmare plan --changed --json
+urmare plan --git-diff main --json
+```
+
+`plan` is the recommended coding-agent entry point. It accepts exactly one
+change source and uses the same path normalization, Git-root discovery,
+merge-base validation, deletion and rename identities, persistent index, and
+configuration fallback as impact analysis. An explicit `--root` remains
+authoritative.
+
+The core derives the plan from one `ImpactResult`. It does not rebuild or
+materialize the complete graph, perform a dependency explanation for each
+test, or run pytest. Detailed paths remain available through `urmare why`.
+
+Validation steps are actions rather than shell strings:
+
+```json
+{
+  "kind": "pytest",
+  "program": "pytest",
+  "args": ["tests/api/test_checkout.py"]
+}
+```
+
+Selective mode emits one pytest step containing every affected test file in
+deterministic order. None mode emits no steps. Full mode emits one pytest step
+with an empty argument list, instructing the caller to use complete pytest
+discovery. Human plan output is deterministic and never truncates validation
+targets.
 
 ---
 
@@ -897,6 +968,41 @@ Example conceptual schema:
 }
 ```
 
+The agent-facing validation plan has an independent schema version beginning
+at 1. It preserves the complete impact fields and attribution, then adds the
+validation decision and structured steps:
+
+```json
+{
+  "schema_version": 1,
+  "changed": ["src/payments/service.py"],
+  "directly_affected": ["src/api/checkout.py"],
+  "transitively_affected": [],
+  "affected_tests": ["tests/api/test_checkout.py"],
+  "validation": {
+    "mode": "selective",
+    "steps": [
+      {
+        "kind": "pytest",
+        "program": "pytest",
+        "args": ["tests/api/test_checkout.py"]
+      }
+    ]
+  },
+  "attributions": [
+    {
+      "affected": "tests/api/test_checkout.py",
+      "caused_by": ["src/payments/service.py"]
+    }
+  ]
+}
+```
+
+Plan fields and arrays are deterministic, complete, and contain only
+repository-relative paths. The plan contains no graph identifiers, timestamps,
+machine paths, or shell-escaped command strings. Its schema version is
+independent of the graph, impact, test-selection, and explanation schemas.
+
 When repository-root configuration changed, impact and test-selection schema
 version 1 add this optional object:
 
@@ -916,6 +1022,11 @@ configuration is not an import-graph node; the presence of `full_validation`
 distinguishes this state from zero impact. `changed` remains a list of Python
 identities and may be empty for a configuration-only change. This field is an
 additive version-1 extension and is omitted from ordinary output.
+
+The same `full_validation` object appears in a full plan. In that case,
+`validation.mode` is `full` and the single pytest step has `"args": []`, which
+represents complete pytest discovery. No-test plans use mode `none`, contain no
+steps, and remain successful results.
 
 Dependency explanations serialize canonical endpoints and the ordered path
 from affected dependent toward changed dependency. They also contain an
@@ -1108,6 +1219,16 @@ must never prevent correct analysis.
 
 # CI Vision
 
+The current integration boundary is the deterministic CLI/JSON plan:
+
+```bash
+urmare plan --git-diff origin/main --json
+```
+
+CI should independently recompute this plan rather than trusting an agent's
+earlier result, then invoke every step through the repository's established
+environment. Urmare does not execute those steps.
+
 Eventually:
 
 ```bash
@@ -1131,40 +1252,53 @@ Tests avoided:
   8,412
 ```
 
-Urmare should initially produce the plan rather than attempt to become a CI execution platform.
+Urmare produces the plan rather than attempting to become a CI execution platform.
 
 ---
 
 # Coding-Agent Vision
 
-Expose repository intelligence through JSON and eventually MCP.
+`urmare plan` is the current coding-agent interface. It is a portable CLI and
+JSON contract; there is no native MCP server or native Codex, Claude Code,
+Cursor, or other agent integration. A terminal-capable agent can use the
+contract without a hosted Sorginte service.
 
-Potential tools:
-
-```text
-get_impact(files)
-get_dependencies(entity)
-get_dependents(entity)
-get_affected_tests(files)
-explain_dependency(source, target)
-get_validation_plan(files)
-```
-
-Example workflow:
+The recommended workflow is:
 
 ```text
-agent edits code
+agent edits Python code
     ↓
-Urmare impact analysis
+urmare plan --changed --json
     ↓
-affected tests/checks
+agent runs every validation step
     ↓
-agent validates
+agent uses urmare why when an impact path needs investigation
     ↓
-fixes failures
+CI independently recomputes the plan
 ```
 
-This may become one of the project's strongest long-term differentiators.
+Copyable instruction for terminal-capable coding agents:
+
+```text
+After modifying Python code:
+
+1. Run `urmare plan --changed --json`.
+2. Execute every validation step using the repository’s established environment.
+3. If the plan requires full validation, run the complete test suite.
+4. Do not claim completion until the required validation succeeds.
+5. Use `urmare why` when an affected relationship needs explanation.
+```
+
+For example, after editing `src/payments/service.py`, a selective plan can
+supply `tests/api/test_checkout.py` as the pytest target. In a repository whose
+established environment uses uv, the agent executes:
+
+```bash
+uv run pytest tests/api/test_checkout.py
+```
+
+Urmare supplies the target but does not run pytest. An MCP adapter may be
+considered later, without changing the deterministic core semantics.
 
 ---
 
@@ -1189,19 +1323,19 @@ canonical Python-tool installation channel.
 A release such as:
 
 ```text
-v0.1.0
+v0.3.0
 ```
 
 corresponds to these platform-specific archives:
 
 ```text
-urmare-v0.1.0-aarch64-apple-darwin.tar.gz
-urmare-v0.1.0-x86_64-apple-darwin.tar.gz
+urmare-v0.3.0-aarch64-apple-darwin.tar.gz
+urmare-v0.3.0-x86_64-apple-darwin.tar.gz
 
-urmare-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-urmare-v0.1.0-aarch64-unknown-linux-gnu.tar.gz
+urmare-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+urmare-v0.3.0-aarch64-unknown-linux-gnu.tar.gz
 
-urmare-v0.1.0-x86_64-pc-windows-msvc.zip
+urmare-v0.3.0-x86_64-pc-windows-msvc.zip
 ```
 
 The public GitHub Release also contains `SHA256SUMS`, but does not contain
@@ -1367,6 +1501,7 @@ Do not implement:
 
 - dependency resolution from package indexes
 - test framework replacement
+- pytest or validation-step execution
 - distributed execution
 - remote cache
 - full Python call graph

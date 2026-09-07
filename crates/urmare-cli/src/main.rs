@@ -8,9 +8,9 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
 use urmare_core::{
-    AnalysisError, DependencyPath, GitDiffAnalysis, GraphInspection, ImpactResult,
-    ImportResolutionStatus, RepositoryAnalysis, discover_git_repository_root,
-    display_repository_path,
+    AnalysisError, DependencyPath, FullValidationReason, GitDiffAnalysis, GraphInspection,
+    ImpactResult, ImportResolutionStatus, RepositoryAnalysis, ValidationMode, ValidationPlan,
+    ValidationStepKind, discover_git_repository_root, display_repository_path,
 };
 
 const LIST_LIMIT: usize = 25;
@@ -65,6 +65,17 @@ enum Command {
         /// Show every human-readable result; incompatible with --json.
         #[arg(long, conflicts_with = "json")]
         all: bool,
+    },
+    /// Create a deterministic pytest validation plan from a path or Git changes.
+    #[command(
+        after_help = "Examples:\n  urmare plan src/payments/service.py\n  urmare plan src/payments/service.py src/payments/stripe.py --json\n  urmare plan --changed --json\n  urmare plan --git-diff main --json"
+    )]
+    Plan {
+        #[command(flatten)]
+        changes: ChangeSource,
+        /// Emit the agent-facing, schema-version-1 JSON plan.
+        #[arg(long)]
+        json: bool,
     },
     /// Select pytest-style files affected by a path or Git changes.
     #[command(
@@ -197,26 +208,19 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Command::Impact { changes, json, all } => {
-            let ChangeSource {
-                files,
-                changed,
-                git_diff,
-            } = changes;
-            let git_aware = changed || git_diff.is_some();
-            let root = selected_root(root.as_deref(), git_aware)?;
-            let impact = match (files.is_empty(), changed, git_diff) {
-                (false, false, None) => RepositoryAnalysis::build(&root)?.impact_many(&files)?,
-                (true, true, None) => GitDiffAnalysis::build(&root, "HEAD")?.impact()?,
-                (true, false, Some(base)) => GitDiffAnalysis::build(&root, &base)?.impact()?,
-                (true, false, None) => return Err(AnalysisError::MissingChangedInput.into()),
-                _ => {
-                    return Err(AnalysisError::ConflictingChangedInput.into());
-                }
-            };
+            let impact = analyze_changes(root.as_deref(), &changes)?;
             if json {
                 write_json(&crate::json::impact(&impact)?)?;
             } else {
                 print_impact(&impact, all);
+            }
+        }
+        Command::Plan { changes, json } => {
+            let plan = ValidationPlan::from_impact(analyze_changes(root.as_deref(), &changes)?);
+            if json {
+                write_json(&crate::json::plan(&plan)?)?;
+            } else {
+                print_validation_plan(&plan);
             }
         }
         Command::Tests {
@@ -225,18 +229,13 @@ fn run(cli: Cli) -> Result<(), CliError> {
             git_diff,
             json,
         } => {
-            let git_aware = changed || git_diff.is_some();
-            let root = selected_root(root.as_deref(), git_aware)?;
             let files = affected.unwrap_or_default();
-            let impact = match (files.is_empty(), changed, git_diff) {
-                (false, false, None) => RepositoryAnalysis::build(&root)?.impact_many(&files)?,
-                (true, true, None) => GitDiffAnalysis::build(&root, "HEAD")?.impact()?,
-                (true, false, Some(base)) => GitDiffAnalysis::build(&root, &base)?.impact()?,
-                (true, false, None) => return Err(AnalysisError::MissingChangedInput.into()),
-                _ => {
-                    return Err(AnalysisError::ConflictingChangedInput.into());
-                }
+            let changes = ChangeSource {
+                files,
+                changed,
+                git_diff,
             };
+            let impact = analyze_changes(root.as_deref(), &changes)?;
             if json {
                 write_json(&crate::json::tests(&impact)?)?;
             } else {
@@ -276,6 +275,22 @@ fn run(cli: Cli) -> Result<(), CliError> {
     }
 
     Ok(())
+}
+
+fn analyze_changes(root: Option<&Path>, changes: &ChangeSource) -> Result<ImpactResult, CliError> {
+    let git_aware = changes.changed || changes.git_diff.is_some();
+    let root = selected_root(root, git_aware)?;
+    match (
+        changes.files.is_empty(),
+        changes.changed,
+        changes.git_diff.as_deref(),
+    ) {
+        (false, false, None) => Ok(RepositoryAnalysis::build(&root)?.impact_many(&changes.files)?),
+        (true, true, None) => Ok(GitDiffAnalysis::build(&root, "HEAD")?.impact()?),
+        (true, false, Some(base)) => Ok(GitDiffAnalysis::build(&root, base)?.impact()?),
+        (true, false, None) => Err(AnalysisError::MissingChangedInput.into()),
+        _ => Err(AnalysisError::ConflictingChangedInput.into()),
+    }
 }
 
 fn selected_root(root: Option<&Path>, discover_git: bool) -> Result<PathBuf, CliError> {
@@ -512,6 +527,114 @@ fn print_impact(impact: &ImpactResult, show_all: bool) {
         show_all,
     );
     print_path_group("Affected tests", &tests, impact, true, show_all);
+}
+
+fn print_validation_plan(plan: &ValidationPlan) {
+    let impact = &plan.impact;
+    let affected_tests: HashSet<&Path> =
+        impact.affected_tests.iter().map(PathBuf::as_path).collect();
+    let directly_affected_modules = impact
+        .directly_affected
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| !affected_tests.contains(path))
+        .collect::<Vec<_>>();
+    let transitively_affected_modules = impact
+        .transitively_affected
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| !affected_tests.contains(path))
+        .collect::<Vec<_>>();
+    let changed = impact
+        .changed
+        .iter()
+        .map(PathBuf::as_path)
+        .collect::<Vec<_>>();
+    let selected_tests = plan
+        .selected_test_targets
+        .iter()
+        .map(PathBuf::as_path)
+        .collect::<Vec<_>>();
+
+    println!("Validation plan");
+    println!(
+        "\nMode\n  {}",
+        match plan.mode {
+            ValidationMode::Selective => "selective",
+            ValidationMode::None => "none",
+            ValidationMode::Full => "full",
+        }
+    );
+    print_complete_path_group("Changed files", &changed);
+    print_complete_path_group("Directly affected modules", &directly_affected_modules);
+    print_complete_path_group(
+        "Transitively affected modules",
+        &transitively_affected_modules,
+    );
+    print_complete_path_group("Selected pytest files", &selected_tests);
+
+    println!("\nFull validation required");
+    if let Some(full_validation) = plan.full_validation() {
+        println!("  yes");
+        println!(
+            "  Reason: {}",
+            match full_validation.reason {
+                FullValidationReason::ConfigurationChanged => "configuration_changed",
+            }
+        );
+        let configuration_paths = full_validation
+            .configuration_paths
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>();
+        print_indented_path_group("Configuration paths", &configuration_paths, 2);
+    } else {
+        println!("  no");
+    }
+
+    println!("\nAgent validation steps ({})", plan.steps.len());
+    if plan.steps.is_empty() {
+        println!("  (none)");
+    }
+    for (index, step) in plan.steps.iter().enumerate() {
+        println!("  Step {}", index + 1);
+        println!(
+            "    Kind: {}",
+            match step.kind {
+                ValidationStepKind::Pytest => "pytest",
+            }
+        );
+        println!("    Program: {}", step.program);
+        if step.args.is_empty() {
+            println!("    Targets: full pytest discovery (no explicit targets)");
+        } else {
+            let args = step.args.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+            print_indented_path_group("Targets", &args, 4);
+        }
+    }
+}
+
+fn print_complete_path_group(label: &str, paths: &[&Path]) {
+    println!("\n{label} ({})", paths.len());
+    if paths.is_empty() {
+        println!("  (none)");
+    } else {
+        for path in paths {
+            println!("  {}", display_repository_path(path));
+        }
+    }
+}
+
+fn print_indented_path_group(label: &str, paths: &[&Path], indentation: usize) {
+    let indent = " ".repeat(indentation);
+    println!("{indent}{label} ({})", paths.len());
+    if paths.is_empty() {
+        println!("{indent}  (none)");
+    } else {
+        for path in paths {
+            println!("{indent}  {}", display_repository_path(path));
+        }
+    }
 }
 
 fn print_full_validation_warning(impact: &ImpactResult) {

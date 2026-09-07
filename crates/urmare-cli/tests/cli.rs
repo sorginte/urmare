@@ -28,6 +28,9 @@ fn top_level_help_points_to_command_specific_options() {
         ))
         .stdout(predicate::str::contains(
             "every Git-aware command discovers it when omitted",
+        ))
+        .stdout(predicate::str::contains(
+            "plan    Create a deterministic pytest validation plan",
         ));
 }
 
@@ -56,6 +59,21 @@ fn command_help_documents_options_constraints_and_examples() {
         ))
         .stdout(predicate::str::contains(
             "urmare impact --git-diff main --json",
+        ));
+
+    urmare()
+        .args(["plan", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "<FILE|--changed|--git-diff <BASE>>",
+        ))
+        .stdout(predicate::str::contains(
+            "urmare plan src/payments/service.py src/payments/stripe.py --json",
+        ))
+        .stdout(predicate::str::contains("urmare plan --changed --json"))
+        .stdout(predicate::str::contains(
+            "urmare plan --git-diff main --json",
         ));
 
     urmare()
@@ -111,6 +129,32 @@ fn impact_requires_exactly_one_change_source() {
             "Usage: urmare impact <FILE|--changed|--git-diff <BASE>>",
         ))
         .stderr(predicate::str::contains("--git-diff <BASE> <FILE>").not());
+}
+
+#[test]
+fn plan_requires_exactly_one_change_source() {
+    urmare()
+        .arg("plan")
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "Usage: urmare plan <FILE|--changed|--git-diff <BASE>>",
+        ));
+
+    urmare()
+        .args(["plan", "module.py", "--changed", "--json"])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains("cannot be used with"));
+
+    urmare()
+        .args(["plan", "--changed", "--git-diff", "HEAD", "--json"])
+        .assert()
+        .code(2)
+        .stdout("")
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]
@@ -838,6 +882,164 @@ fn impact_json_has_a_stable_versioned_schema() {
 }
 
 #[test]
+fn plan_json_has_an_exact_independent_schema_version_one_contract() {
+    let output = json_output(&[
+        "--root",
+        fixture("src-layout").to_str().expect("UTF-8 fixture"),
+        "plan",
+        "src/payments/stripe.py",
+        "--json",
+    ]);
+
+    assert_eq!(
+        output,
+        json!({
+            "schema_version": 1,
+            "changed": ["src/payments/stripe.py"],
+            "directly_affected": [
+                "src/payments/formatters/card.py",
+                "src/payments/service.py",
+                "tests/payments/test_stripe.py"
+            ],
+            "transitively_affected": [
+                "src/api/checkout.py",
+                "tests/api/test_checkout.py"
+            ],
+            "affected_tests": [
+                "tests/api/test_checkout.py",
+                "tests/payments/test_stripe.py"
+            ],
+            "validation": {
+                "mode": "selective",
+                "steps": [{
+                    "kind": "pytest",
+                    "program": "pytest",
+                    "args": [
+                        "tests/api/test_checkout.py",
+                        "tests/payments/test_stripe.py"
+                    ]
+                }]
+            },
+            "attributions": [
+                {
+                    "affected": "src/api/checkout.py",
+                    "caused_by": ["src/payments/stripe.py"]
+                },
+                {
+                    "affected": "src/payments/formatters/card.py",
+                    "caused_by": ["src/payments/stripe.py"]
+                },
+                {
+                    "affected": "src/payments/service.py",
+                    "caused_by": ["src/payments/stripe.py"]
+                },
+                {
+                    "affected": "tests/api/test_checkout.py",
+                    "caused_by": ["src/payments/stripe.py"]
+                },
+                {
+                    "affected": "tests/payments/test_stripe.py",
+                    "caused_by": ["src/payments/stripe.py"]
+                }
+            ]
+        })
+    );
+}
+
+#[test]
+fn plan_human_output_is_complete_and_structured() {
+    urmare()
+        .args([
+            "--root",
+            fixture("src-layout").to_str().expect("UTF-8 fixture"),
+            "plan",
+            "src/payments/stripe.py",
+        ])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(concat!(
+            "Validation plan\n",
+            "\nMode\n",
+            "  selective\n",
+            "\nChanged files (1)\n",
+            "  src/payments/stripe.py\n",
+            "\nDirectly affected modules (2)\n",
+            "  src/payments/formatters/card.py\n",
+            "  src/payments/service.py\n",
+            "\nTransitively affected modules (1)\n",
+            "  src/api/checkout.py\n",
+            "\nSelected pytest files (2)\n",
+            "  tests/api/test_checkout.py\n",
+            "  tests/payments/test_stripe.py\n",
+            "\nFull validation required\n",
+            "  no\n",
+            "\nAgent validation steps (1)\n",
+            "  Step 1\n",
+            "    Kind: pytest\n",
+            "    Program: pytest\n",
+            "    Targets (2)\n",
+            "      tests/api/test_checkout.py\n",
+            "      tests/payments/test_stripe.py\n",
+        ));
+}
+
+#[test]
+fn plan_supports_multiple_explicit_files_and_deterministic_step_ordering() {
+    let root = fixture("src-layout");
+    let first = json_output(&[
+        "--root",
+        root.to_str().expect("UTF-8 fixture"),
+        "plan",
+        "src/payments/stripe.py",
+        "src/payments/service.py",
+        "--json",
+    ]);
+    let reversed = json_output(&[
+        "--root",
+        root.to_str().expect("UTF-8 fixture"),
+        "plan",
+        "src/payments/service.py",
+        "src/payments/stripe.py",
+        "--json",
+    ]);
+
+    assert_eq!(first, reversed);
+    assert_eq!(
+        first["changed"],
+        json!(["src/payments/service.py", "src/payments/stripe.py"])
+    );
+    assert_eq!(first["validation"]["mode"], "selective");
+    assert_eq!(
+        first["validation"]["steps"][0]["args"],
+        json!([
+            "tests/api/test_checkout.py",
+            "tests/payments/test_stripe.py"
+        ])
+    );
+}
+
+#[test]
+fn plan_uses_none_mode_when_no_pytest_files_are_affected() {
+    let output = json_output(&[
+        "--root",
+        fixture("src-layout").to_str().expect("UTF-8 fixture"),
+        "plan",
+        "src/cycles/a.py",
+        "--json",
+    ]);
+
+    assert_eq!(output["affected_tests"], json!([]));
+    assert_eq!(
+        output["validation"],
+        json!({
+            "mode": "none",
+            "steps": []
+        })
+    );
+}
+
+#[test]
 fn affected_tests_json_contains_only_selection_fields_and_attribution() {
     let output = json_output(&[
         "--root",
@@ -1303,6 +1505,130 @@ fn changed_commands_analyze_the_working_tree_and_discover_root_from_a_subdirecto
             ]
         })
     );
+
+    let plan = urmare()
+        .current_dir(repository.path().join("src/pkg"))
+        .args(["plan", "--changed", "--json"])
+        .output()
+        .expect("Urmare changed plan output");
+    assert!(
+        plan.status.success(),
+        "Urmare failed: {}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    assert!(plan.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&plan.stdout).expect("valid JSON")["validation"],
+        json!({
+            "mode": "selective",
+            "steps": [{
+                "kind": "pytest",
+                "program": "pytest",
+                "args": ["tests/test_service.py"]
+            }]
+        })
+    );
+}
+
+#[test]
+fn plan_changed_honors_an_explicit_root_over_the_current_directory() {
+    let repository = initialized_git_repository(&[
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/core.py", "VALUE = 1\n"),
+        ("tests/test_core.py", "from pkg import core\n"),
+    ]);
+    fs::write(repository.path().join("src/pkg/core.py"), "VALUE = 2\n").expect("modify dependency");
+    let unrelated_directory = tempdir().expect("unrelated current directory");
+
+    let output = urmare()
+        .current_dir(unrelated_directory.path())
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
+            "plan",
+            "--changed",
+            "--json",
+        ])
+        .output()
+        .expect("Urmare explicit-root plan output");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let output = serde_json::from_slice::<Value>(&output.stdout).expect("valid JSON");
+    assert_eq!(output["changed"], json!(["src/pkg/core.py"]));
+    assert_eq!(output["affected_tests"], json!(["tests/test_core.py"]));
+}
+
+#[test]
+fn clean_changed_and_git_diff_plans_have_none_mode() {
+    let repository = initialized_git_repository(&[("module.py", "VALUE = 1\n")]);
+    let root = repository.path().to_str().expect("UTF-8 repository");
+
+    let changed = json_output(&["--root", root, "plan", "--changed", "--json"]);
+    let git_diff = json_output(&["--root", root, "plan", "--git-diff", "HEAD", "--json"]);
+
+    assert_eq!(changed, git_diff);
+    assert_eq!(
+        changed,
+        json!({
+            "schema_version": 1,
+            "changed": [],
+            "directly_affected": [],
+            "transitively_affected": [],
+            "affected_tests": [],
+            "validation": {
+                "mode": "none",
+                "steps": []
+            },
+            "attributions": []
+        })
+    );
+}
+
+#[test]
+fn plan_git_diff_uses_the_merge_base_and_preserves_removed_identities() {
+    let repository = initialized_git_repository(&[
+        ("src/pkg/__init__.py", ""),
+        ("src/pkg/deleted.py", "DELETED = True\n"),
+        ("src/pkg/deleted_user.py", "from . import deleted\n"),
+        ("src/pkg/old.py", "OLD = True\n"),
+        ("src/pkg/old_user.py", "from . import old\n"),
+        ("tests/test_deleted.py", "from pkg import deleted_user\n"),
+        ("tests/test_old.py", "from pkg import old_user\n"),
+    ]);
+    git(repository.path(), &["branch", "baseline"]);
+    fs::remove_file(repository.path().join("src/pkg/deleted.py")).expect("delete dependency");
+    git(
+        repository.path(),
+        &["mv", "src/pkg/old.py", "src/pkg/renamed.py"],
+    );
+    git(repository.path(), &["add", "-A"]);
+    commit(repository.path(), "remove and rename dependencies");
+
+    let output = json_output(&[
+        "--root",
+        repository.path().to_str().expect("UTF-8 repository"),
+        "plan",
+        "--git-diff",
+        "baseline",
+        "--json",
+    ]);
+
+    assert_eq!(
+        output["changed"],
+        json!(["src/pkg/deleted.py", "src/pkg/old.py", "src/pkg/renamed.py"])
+    );
+    assert_eq!(
+        output["validation"],
+        json!({
+            "mode": "selective",
+            "steps": [{
+                "kind": "pytest",
+                "program": "pytest",
+                "args": ["tests/test_deleted.py", "tests/test_old.py"]
+            }]
+        })
+    );
 }
 
 #[test]
@@ -1698,6 +2024,22 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
         .args([
             "--root",
             repository.path().to_str().expect("UTF-8 repository"),
+            "plan",
+            "--git-diff",
+            "missing-reference",
+            "--json",
+        ])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "Git base `missing-reference` does not resolve to a commit",
+        ));
+
+    urmare()
+        .args([
+            "--root",
+            repository.path().to_str().expect("UTF-8 repository"),
             "tests",
             "--affected",
         ])
@@ -1781,6 +2123,25 @@ fn git_diff_reports_invalid_bases_and_incomplete_test_selection() {
 }
 
 #[test]
+fn plan_rejects_paths_outside_the_repository_without_writing_json() {
+    let root = fixture("src-layout");
+    let outside = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+
+    urmare()
+        .args([
+            "--root",
+            root.to_str().expect("UTF-8 fixture"),
+            "plan",
+            outside.to_str().expect("UTF-8 outside path"),
+            "--json",
+        ])
+        .assert()
+        .code(3)
+        .stdout("")
+        .stderr(predicate::str::contains("is outside repository"));
+}
+
+#[test]
 fn configuration_only_changes_select_every_current_test_deterministically() {
     let repository = initialized_git_repository(&[
         (
@@ -1859,6 +2220,51 @@ fn configuration_only_changes_select_every_current_test_deterministically() {
         ]),
         tests
     );
+
+    let plan = json_output(&["--root", root, "plan", "--changed", "--json"]);
+    assert_eq!(
+        plan,
+        json!({
+            "schema_version": 1,
+            "changed": [],
+            "directly_affected": [],
+            "transitively_affected": [],
+            "affected_tests": [
+                "tests/test_alpha.py",
+                "verification/beta_spec.py"
+            ],
+            "validation": {
+                "mode": "full",
+                "steps": [{
+                    "kind": "pytest",
+                    "program": "pytest",
+                    "args": []
+                }]
+            },
+            "full_validation": {
+                "required": true,
+                "reason": "configuration_changed",
+                "configuration_paths": ["pyproject.toml"]
+            },
+            "attributions": []
+        })
+    );
+    assert_eq!(
+        json_output(&["--root", root, "plan", "--git-diff", "HEAD", "--json",]),
+        plan
+    );
+
+    urmare()
+        .args(["--root", root, "plan", "--changed"])
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains("Mode\n  full"))
+        .stdout(predicate::str::contains("Full validation required\n  yes"))
+        .stdout(predicate::str::contains("Reason: configuration_changed"))
+        .stdout(predicate::str::contains(
+            "Targets: full pytest discovery (no explicit targets)",
+        ));
 
     urmare()
         .args(["--root", root, "tests", "--affected", "--changed"])

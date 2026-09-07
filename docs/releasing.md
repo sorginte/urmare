@@ -147,8 +147,8 @@ that exact commit. Then create and push an annotated tag:
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.2.0 -m "Urmare v0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "Urmare v0.3.0"
+git push origin v0.3.0
 ```
 
 The workflow creates the draft before requesting approval at the `pypi`
@@ -170,7 +170,7 @@ sha256sum --check SHA256SUMS
 # macOS
 shasum -a 256 --check SHA256SUMS
 
-gh attestation verify urmare-v0.2.0-x86_64-unknown-linux-gnu.tar.gz \
+gh attestation verify urmare-v0.3.0-x86_64-unknown-linux-gnu.tar.gz \
   --repo sorginte/urmare
 gh attestation verify SHA256SUMS --repo sorginte/urmare
 ```
@@ -180,7 +180,7 @@ PyPI publish attestations during Trusted Publishing. After downloading the
 wheel selected for the current platform, verify its GitHub provenance with:
 
 ```bash
-gh attestation verify urmare-0.2.0-py3-none-PLATFORM.whl \
+gh attestation verify urmare-0.3.0-py3-none-PLATFORM.whl \
   --repo sorginte/urmare
 ```
 
