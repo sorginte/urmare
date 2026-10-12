@@ -1,0 +1,19 @@
+[package]
+name = "urmare-contract"
+description = "Versioned machine-readable contracts for Urmare adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "urmare_contract"
+path = "src/lib.rs"
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+urmare-core = { path = "../urmare-core" }

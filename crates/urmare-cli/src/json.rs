@@ -1,18 +1,17 @@
 //! Versioned machine-readable output schemas.
 //!
-//! These DTOs intentionally live at the CLI boundary. The impact domain stays
-//! independent of serialization, while field names and schema evolution remain
-//! explicit and testable here.
+//! Graph, impact, and test-selection DTOs remain private to the CLI. Validation
+//! plans and dependency explanations use the shared adapter contract.
 
 use serde::Serialize;
+use urmare_contract::{DependencyPathOutput, PlanOutput, to_pretty_json};
 use urmare_core::{
     DependencyEdge, DependencyPath, FullValidationReason, GraphInspection, GraphSummary,
     ImpactResult, ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, StaticImport,
-    UnresolvedImport, ValidationMode, ValidationPlan, ValidationStepKind, display_repository_path,
+    UnresolvedImport, ValidationPlan, display_repository_path,
 };
 
 const SCHEMA_VERSION: u32 = 1;
-const PLAN_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize)]
 struct GraphOutput {
@@ -108,32 +107,6 @@ struct TestSelectionOutput {
 }
 
 #[derive(Debug, Serialize)]
-struct PlanOutput {
-    schema_version: u32,
-    changed: Vec<String>,
-    directly_affected: Vec<String>,
-    transitively_affected: Vec<String>,
-    affected_tests: Vec<String>,
-    validation: ValidationOutput,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    full_validation: Option<FullValidationOutput>,
-    attributions: Vec<AttributionOutput>,
-}
-
-#[derive(Debug, Serialize)]
-struct ValidationOutput {
-    mode: &'static str,
-    steps: Vec<ValidationStepOutput>,
-}
-
-#[derive(Debug, Serialize)]
-struct ValidationStepOutput {
-    kind: &'static str,
-    program: String,
-    args: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
 struct FullValidationOutput {
     required: bool,
     reason: &'static str,
@@ -144,22 +117,6 @@ struct FullValidationOutput {
 struct AttributionOutput {
     affected: String,
     caused_by: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct DependencyPathOutput {
-    schema_version: u32,
-    changed: String,
-    affected: String,
-    path: Vec<String>,
-    steps: Vec<DependencyStepOutput>,
-}
-
-#[derive(Debug, Serialize)]
-struct DependencyStepOutput {
-    dependent: String,
-    dependency: String,
-    imports: Vec<ImportProvenanceOutput>,
 }
 
 /// Serializes repository graph statistics using schema version 1.
@@ -232,60 +189,12 @@ pub fn tests(impact: &ImpactResult) -> Result<String, serde_json::Error> {
 
 /// Serializes an agent-facing validation plan using its independent schema version 1.
 pub fn plan(plan: &ValidationPlan) -> Result<String, serde_json::Error> {
-    let impact = &plan.impact;
-    pretty_json(&PlanOutput {
-        schema_version: PLAN_SCHEMA_VERSION,
-        changed: paths(&impact.changed),
-        directly_affected: paths(&impact.directly_affected),
-        transitively_affected: paths(&impact.transitively_affected),
-        affected_tests: paths(&impact.affected_tests),
-        validation: ValidationOutput {
-            mode: match plan.mode {
-                ValidationMode::Selective => "selective",
-                ValidationMode::None => "none",
-                ValidationMode::Full => "full",
-            },
-            steps: plan
-                .steps
-                .iter()
-                .map(|step| ValidationStepOutput {
-                    kind: match step.kind {
-                        ValidationStepKind::Pytest => "pytest",
-                    },
-                    program: step.program.clone(),
-                    args: paths(&step.args),
-                })
-                .collect(),
-        },
-        full_validation: full_validation(impact),
-        attributions: impact
-            .attributions
-            .iter()
-            .map(|attribution| AttributionOutput {
-                affected: display_repository_path(&attribution.affected),
-                caused_by: paths(&attribution.caused_by),
-            })
-            .collect(),
-    })
+    to_pretty_json(&PlanOutput::from(plan))
 }
 
 /// Serializes one dependency explanation using schema version 1.
 pub fn why(explanation: &DependencyPath) -> Result<String, serde_json::Error> {
-    pretty_json(&DependencyPathOutput {
-        schema_version: SCHEMA_VERSION,
-        changed: display_repository_path(&explanation.changed),
-        affected: display_repository_path(&explanation.affected),
-        path: paths(&explanation.path),
-        steps: explanation
-            .steps
-            .iter()
-            .map(|step| DependencyStepOutput {
-                dependent: display_repository_path(&step.dependent),
-                dependency: display_repository_path(&step.dependency),
-                imports: provenance(&step.imports),
-            })
-            .collect(),
-    })
+    to_pretty_json(&DependencyPathOutput::from(explanation))
 }
 
 fn full_validation(impact: &ImpactResult) -> Option<FullValidationOutput> {
