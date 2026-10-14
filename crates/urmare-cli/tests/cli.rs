@@ -2474,6 +2474,64 @@ fn clean_git_diff_json_keeps_every_array_field_present() {
     assert_eq!(changed_tests, tests);
 }
 
+#[test]
+fn coverage_relationships_are_visible_in_cli_json_and_human_output() {
+    let repository = initialized_git_repository(&[
+        (
+            "src/pkg/__init__.py",
+            "from .service import Service as PublicService\n__all__ = [\"PublicService\"]\n",
+        ),
+        ("src/pkg/service.py", "class Service: pass\n"),
+        ("src/consumer.py", "from pkg import PublicService\n"),
+        (
+            "conftest.py",
+            "import pytest\n@pytest.fixture(autouse=True)\ndef database():\n    return 1\n",
+        ),
+        (
+            "tests/test_consumer.py",
+            "from consumer import PublicService\ndef test_service(database):\n    assert PublicService\n",
+        ),
+    ]);
+    let root = repository.path().to_str().expect("UTF-8 repository");
+
+    let graph = json_output(&["--root", root, "graph", "--debug", "--json"]);
+    let edges = graph["inspection"]["edges"].as_array().expect("edges");
+    assert!(edges.iter().any(|edge| {
+        edge["evidence"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["kind"] == "re_export"))
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge["evidence"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["kind"] == "pytest_configuration")
+        })
+    }));
+
+    let why = json_output(&[
+        "--root",
+        root,
+        "why",
+        "src/pkg/service.py",
+        "tests/test_consumer.py",
+        "--json",
+    ]);
+    assert!(why["steps"].as_array().is_some_and(|steps| {
+        steps.iter().any(|step| {
+            step["evidence"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["kind"] == "re_export"))
+        })
+    }));
+
+    urmare()
+        .args(["--root", root, "impact", "src/pkg/service.py"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tests/test_consumer.py"));
+}
+
 fn json_output(arguments: &[&str]) -> Value {
     let output = urmare()
         .args(arguments)

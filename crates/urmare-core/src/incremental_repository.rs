@@ -5,9 +5,9 @@ use std::time::Duration;
 use urmare_python::{ModuleResolver, PathExcluder, resolve_local_import_with};
 
 use crate::{
-    AnalysisError, CacheStats, DependencyEdge, DependencyPath, DependencyStep, GraphCacheStats,
-    GraphInspection, GraphSummary, ImpactAttribution, ImpactResult, ImportResolutionTrace,
-    RepositoryConfig, RepositoryModule, UnresolvedImport,
+    AnalysisError, CacheStats, DependencyEdge, DependencyPath, DependencyStep, FullValidation,
+    FullValidationReason, GraphCacheStats, GraphInspection, GraphSummary, ImpactAttribution,
+    ImpactResult, ImportResolutionTrace, RepositoryConfig, RepositoryModule, UnresolvedImport,
     cache::{CacheLocation, content_hash},
     display_repository_path,
     index::{
@@ -227,6 +227,7 @@ impl RepositoryAnalysis {
                             dependent: file.repository_path(),
                             dependency: portable_path(dependency),
                             imports: provenance(imports),
+                            evidence: imports.clone(),
                         });
                     }
                 }
@@ -448,6 +449,33 @@ impl RepositoryAnalysis {
             .chain(&affected_tests)
             .cloned()
             .collect();
+        let full_validation = changed_keys.iter().chain(closure.iter()).find_map(|path| {
+            let file = self.file(reader, path).ok()?;
+            let reason = if file.pytest.unresolved_fixture_lookups.is_empty()
+                && file.pytest.unsupported_fixtures.is_empty()
+                && file.pytest.unsupported_plugins.is_empty()
+            {
+                if file.pytest.unsupported_exports.is_empty() {
+                    file.imports
+                        .iter()
+                        .any(|import| {
+                            matches!(
+                                import.import,
+                                urmare_python::StaticImport::Dynamic { module: None, .. }
+                            )
+                        })
+                        .then_some(FullValidationReason::UnresolvedDynamicImport)
+                } else {
+                    Some(FullValidationReason::UnsupportedExports)
+                }
+            } else {
+                Some(FullValidationReason::UnsupportedPytestRelationship)
+            }?;
+            Some(FullValidation {
+                reason,
+                configuration_paths: vec![portable_path(path)],
+            })
+        });
         let attributions = result_paths
             .into_iter()
             .map(|affected| ImpactAttribution {
@@ -473,7 +501,7 @@ impl RepositoryAnalysis {
                 .map(|path| portable_path(path))
                 .collect(),
             attributions,
-            full_validation: None,
+            full_validation,
         })
     }
 
@@ -555,6 +583,7 @@ impl RepositoryAnalysis {
                 dependent: portable_path(&pair[0]),
                 dependency: portable_path(&pair[1]),
                 imports: provenance(imports),
+                evidence: imports.clone(),
             });
         }
         Ok(DependencyPath {
@@ -711,6 +740,7 @@ impl RepositoryAnalysis {
                         is_package: file.is_package,
                         is_test: file.is_test,
                         imports: Vec::new(),
+                        pytest: urmare_python::PytestFacts::default(),
                         resolutions: Vec::new(),
                         dependencies: BTreeMap::new(),
                         state: virtual_state(),
@@ -778,8 +808,18 @@ fn resolve_overlay_file(
                     continue;
                 }
                 let evidence = file.dependencies.entry(path).or_default();
-                if !evidence.contains(import) {
-                    evidence.push(import.clone());
+                let candidate = crate::DependencyEvidence {
+                    kind: if matches!(import.import, urmare_python::StaticImport::Dynamic { .. }) {
+                        crate::DependencyEvidenceKind::DynamicImport
+                    } else {
+                        crate::DependencyEvidenceKind::Import
+                    },
+                    location: import.location,
+                    import: Some(import.import.clone()),
+                    name: None,
+                };
+                if !evidence.contains(&candidate) {
+                    evidence.push(candidate);
                 }
             }
         }

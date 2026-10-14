@@ -15,8 +15,9 @@ pub use discovery::{
     discover_python_files_with_excluder, is_discoverable_python_path,
 };
 pub use imports::{
-    IMPORT_ANALYSIS_CACHE_TAG, ImportParseError, LocatedImport, SourceLocation, StaticImport,
-    parse_imports, parse_imports_with_locations,
+    DynamicImportApi, ExportDeclaration, FixtureDeclaration, IMPORT_ANALYSIS_CACHE_TAG,
+    ImportParseError, LocatedImport, LocatedName, ParsedPython, PytestFacts, SourceLocation,
+    StaticImport, parse_imports, parse_imports_with_locations, parse_python,
 };
 pub use modules::{
     ImportResolutionFailure, LocalImportResolution, LocalImportResolver, ModuleResolutionError,

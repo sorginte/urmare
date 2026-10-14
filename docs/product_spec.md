@@ -805,6 +805,28 @@ plugin discovery
 
 The product should communicate uncertainty rather than pretending complete knowledge.
 
+## Current static coverage
+
+The file-level graph recognizes ordinary imports plus a deliberately bounded
+set of Python relationships that commonly affect pytest collection:
+
+- package initializer re-exports through `from` imports, literal `__all__`,
+  wildcard re-exports, aliases, and chained local package boundaries;
+- literal `importlib.import_module` and `__import__` calls, including supported
+  aliases and literal relative targets; and
+- applicable ancestor `conftest.py` files, literal fixture declarations and
+  requests (including literal `request.getfixturevalue`), fixture-to-fixture
+  parameters, `autouse`, `usefixtures` marks, and repository-local literal
+  `pytest_plugins` entries.
+
+These relationships carry explicit evidence in graph inspection and `why`.
+They remain file-level and deterministic: Urmare never imports project code,
+executes decorators, evaluates computed exports, resolves external plugins, or
+performs dynamic fixture lookup. A recognized computed target or unsupported
+export/fixture form is reported as uncertainty and widens validation when it
+could make selective analysis unsafe. An unresolved third-party import by
+itself does not force full validation.
+
 ---
 
 # Risk / Blast Radius Score
@@ -1259,9 +1281,10 @@ Urmare produces the plan rather than attempting to become a CI execution platfor
 # Coding-Agent Vision
 
 `urmare plan` is the current coding-agent interface. It is a portable CLI and
-JSON contract; there is no native MCP server or native Codex, Claude Code,
-Cursor, or other agent integration. A terminal-capable agent can use the
-contract without a hosted Sorginte service.
+JSON contract. A terminal-capable agent can use the contract without a hosted
+Sorginte service. A local MCP adapter, when present in the distribution, must
+call the same core operations and return the same DTOs; it does not introduce
+new analysis semantics.
 
 The recommended workflow is:
 
@@ -1297,8 +1320,9 @@ established environment uses uv, the agent executes:
 uv run pytest tests/api/test_checkout.py
 ```
 
-Urmare supplies the target but does not run pytest. An MCP adapter may be
-considered later, without changing the deterministic core semantics.
+Urmare supplies the target but does not run pytest. MCP adapters and other
+clients remain responsible for invoking the repository's established test
+environment.
 
 ---
 

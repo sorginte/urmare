@@ -21,11 +21,11 @@ pub use git::{GitChangeSet, GitDiffAnalysis, GitError, discover_git_repository_r
 pub use graph_cache::GraphCacheStats;
 pub use index::{IndexBuildKind, IndexFallbackReason, IndexTimings, IndexWorkStats};
 pub use model::{
-    DependencyEdge, DependencyPath, DependencyStep, FullValidation, FullValidationReason,
-    GitChange, GitChangeKind, GraphInspection, GraphSummary, ImpactAttribution, ImpactResult,
-    ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, RepositoryModule,
-    ResolvedLocalModule, UnresolvedImport, ValidationMode, ValidationPlan, ValidationStep,
-    ValidationStepKind,
+    DependencyEdge, DependencyEvidence, DependencyEvidenceKind, DependencyPath, DependencyStep,
+    FullValidation, FullValidationReason, GitChange, GitChangeKind, GraphInspection, GraphSummary,
+    ImpactAttribution, ImpactResult, ImportProvenance, ImportResolutionStatus,
+    ImportResolutionTrace, RepositoryModule, ResolvedLocalModule, UnresolvedImport, ValidationMode,
+    ValidationPlan, ValidationStep, ValidationStepKind,
 };
 pub use repository::{AnalysisTimings, QueryProfile, RepositoryAnalysis};
 pub use urmare_python::{SourceLocation, StaticImport};

@@ -6,9 +6,10 @@
 
 use serde::Serialize;
 use urmare_core::{
-    DependencyEdge, DependencyPath, FullValidationReason, GraphInspection, GraphSummary,
-    ImpactResult, ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, StaticImport,
-    UnresolvedImport, ValidationMode, ValidationPlan, ValidationStepKind, display_repository_path,
+    DependencyEdge, DependencyEvidence, DependencyEvidenceKind, DependencyPath,
+    FullValidationReason, GraphInspection, GraphSummary, ImpactResult, ImportProvenance,
+    ImportResolutionStatus, ImportResolutionTrace, StaticImport, UnresolvedImport, ValidationMode,
+    ValidationPlan, ValidationStepKind, display_repository_path,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -59,6 +60,8 @@ struct DependencyEdgeOutput {
     dependent: String,
     dependency: String,
     imports: Vec<ImportProvenanceOutput>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence: Vec<DependencyEvidenceOutput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -160,6 +163,19 @@ struct DependencyStepOutput {
     dependent: String,
     dependency: String,
     imports: Vec<ImportProvenanceOutput>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence: Vec<DependencyEvidenceOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct DependencyEvidenceOutput {
+    kind: &'static str,
+    line: usize,
+    column: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    import: Option<StaticImport>,
 }
 
 /// Serializes repository graph statistics using schema version 1.
@@ -283,6 +299,7 @@ pub fn why(explanation: &DependencyPath) -> Result<String, serde_json::Error> {
                 dependent: display_repository_path(&step.dependent),
                 dependency: display_repository_path(&step.dependency),
                 imports: provenance(&step.imports),
+                evidence: evidence(&step.evidence),
             })
             .collect(),
     })
@@ -296,6 +313,11 @@ fn full_validation(impact: &ImpactResult) -> Option<FullValidationOutput> {
             required: true,
             reason: match validation.reason {
                 FullValidationReason::ConfigurationChanged => "configuration_changed",
+                FullValidationReason::UnresolvedDynamicImport => "unresolved_dynamic_import",
+                FullValidationReason::UnsupportedPytestRelationship => {
+                    "unsupported_pytest_relationship"
+                }
+                FullValidationReason::UnsupportedExports => "unsupported_exports",
             },
             configuration_paths: paths(&validation.configuration_paths),
         })
@@ -341,6 +363,7 @@ fn dependency_edge(edge: &DependencyEdge) -> DependencyEdgeOutput {
         dependent: display_repository_path(&edge.dependent),
         dependency: display_repository_path(&edge.dependency),
         imports: provenance(&edge.imports),
+        evidence: evidence(&edge.evidence),
     }
 }
 
@@ -365,6 +388,7 @@ fn resolution_trace(trace: &ImportResolutionTrace) -> ImportResolutionTraceOutpu
             ImportResolutionStatus::Resolved => "resolved",
             ImportResolutionStatus::Unresolved => "unresolved",
             ImportResolutionStatus::InvalidRelativeImport => "invalid_relative_import",
+            ImportResolutionStatus::UnresolvedDynamicImport => "unresolved_dynamic_import",
         },
         candidate_modules: trace.candidate_modules.clone(),
         resolved_modules: trace
@@ -376,6 +400,28 @@ fn resolution_trace(trace: &ImportResolutionTrace) -> ImportResolutionTraceOutpu
             })
             .collect(),
     }
+}
+
+fn evidence(items: &[DependencyEvidence]) -> Vec<DependencyEvidenceOutput> {
+    items
+        .iter()
+        .filter(|item| item.kind != DependencyEvidenceKind::Import)
+        .map(|item| DependencyEvidenceOutput {
+            kind: match item.kind {
+                DependencyEvidenceKind::Import => "import",
+                DependencyEvidenceKind::DynamicImport => "dynamic_import",
+                DependencyEvidenceKind::ReExport => "re_export",
+                DependencyEvidenceKind::PytestConfiguration => "pytest_configuration",
+                DependencyEvidenceKind::PytestFixture => "pytest_fixture",
+                DependencyEvidenceKind::PytestUsefixtures => "pytest_usefixtures",
+                DependencyEvidenceKind::PytestPlugin => "pytest_plugin",
+            },
+            line: item.location.line,
+            column: item.location.column,
+            name: item.name.clone(),
+            import: item.import.clone(),
+        })
+        .collect()
 }
 
 fn paths(paths: &[std::path::PathBuf]) -> Vec<String> {

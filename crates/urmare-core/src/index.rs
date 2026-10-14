@@ -12,21 +12,22 @@ use redb::{
 use serde::{Deserialize, Serialize};
 use urmare_python::{
     DEFAULT_IGNORED_DIRECTORY_NAMES, IMPORT_ANALYSIS_CACHE_TAG, ImportResolutionFailure,
-    LocalImportResolution, LocatedImport, ModuleResolver, PathExcluder, PythonFile,
-    discover_python_files_profiled, is_discoverable_python_path, parse_imports_with_locations,
+    LocalImportResolution, LocatedImport, ModuleResolver, PathExcluder, PytestFacts, PythonFile,
+    discover_python_files_profiled, is_discoverable_python_path, parse_python,
     resolve_local_import_with,
 };
 
 use crate::{
-    AnalysisError, GraphSummary, ImportProvenance, ImportResolutionStatus, ImportResolutionTrace,
-    RepositoryConfig, ResolvedLocalModule, UnresolvedImport,
+    AnalysisError, DependencyEvidence, DependencyEvidenceKind, GraphSummary, ImportProvenance,
+    ImportResolutionStatus, ImportResolutionTrace, RepositoryConfig, ResolvedLocalModule,
+    UnresolvedImport,
     cache::{CacheLocation, content_hash, repository_fingerprint},
     display_repository_path,
 };
 
-const INDEX_SCHEMA_VERSION: u32 = 3;
+const INDEX_SCHEMA_VERSION: u32 = 4;
 const INDEX_FILE_NAME: &str = "repository-index.redb";
-const RESOLVER_COMPATIBILITY_TAG: &str = "python-local-import-resolution-v4";
+const RESOLVER_COMPATIBILITY_TAG: &str = "python-local-import-resolution-pytest-exports-v5";
 const META_KEY: &str = "current";
 
 const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("metadata");
@@ -184,9 +185,10 @@ pub(crate) struct StoredFile {
     pub(crate) state: StoredFileState,
     pub(crate) content_hash: String,
     pub imports: Vec<LocatedImport>,
+    pub pytest: PytestFacts,
     pub resolutions: Vec<StoredResolution>,
-    /// Dependency path to every import occurrence producing that edge.
-    pub dependencies: BTreeMap<String, Vec<LocatedImport>>,
+    /// Explainable evidence producing each unique graph edge.
+    pub dependencies: BTreeMap<String, Vec<DependencyEvidence>>,
 }
 
 impl StoredFile {
@@ -359,11 +361,7 @@ impl MemoryIndex {
         GraphSummary {
             python_files: self.files.len(),
             modules: self.modules.len(),
-            import_edges: self
-                .files
-                .values()
-                .map(|file| file.dependencies.len())
-                .sum(),
+            import_edges: self.files.values().map(import_edge_count).sum(),
             tests: self.files.values().filter(|file| file.is_test).count(),
             unresolved_imports: self.files.values().map(unresolved_count).sum(),
         }
@@ -957,7 +955,7 @@ fn build_full(
         work.files_read += 1;
         let hash = content_hash(&source);
         work.files_hashed += 1;
-        let imports = parse_imports_with_locations(&source, &path)?;
+        let parsed = parse_python(&source, &path)?;
         work.files_parsed += 1;
         files.insert(
             key.clone(),
@@ -968,17 +966,15 @@ fn build_full(
                 is_test: file.is_test,
                 state: StoredFileState::from_metadata(&metadata),
                 content_hash: hash,
-                imports,
+                imports: parsed.imports,
+                pytest: parsed.pytest,
                 resolutions: Vec::new(),
                 dependencies: BTreeMap::new(),
             },
         );
     }
 
-    for file in files.values_mut() {
-        resolve_file(file, |module| modules.get(module).cloned());
-        work.importers_reresolved += 1;
-    }
+    resolve_all_files(&mut files, &modules, work);
     let mut index = MemoryIndex {
         files,
         modules,
@@ -994,30 +990,438 @@ fn build_full(
     Ok((index, source_roots))
 }
 
-fn resolve_file(file: &mut StoredFile, mut module_path: impl FnMut(&str) -> Option<String>) {
+type ExportIndex = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
+
+fn resolve_all_files(
+    files: &mut BTreeMap<String, StoredFile>,
+    modules: &BTreeMap<String, String>,
+    work: &mut IndexWorkStats,
+) {
+    let exports = build_export_index(files, modules);
+    for file in files.values_mut() {
+        resolve_file(file, modules, &exports);
+        work.importers_reresolved += 1;
+    }
+    add_pytest_relationships(files, modules);
+}
+
+fn resolve_file(file: &mut StoredFile, modules: &BTreeMap<String, String>, exports: &ExportIndex) {
     let python_file = file.python_file();
     file.resolutions.clear();
     file.dependencies.clear();
     for import in &file.imports {
         let resolution = resolve_local_import_with(&python_file, &import.import, |module| {
-            module_path(module).is_some()
+            modules.contains_key(module)
         });
         for module in &resolution.resolved_modules {
-            let Some(path) = module_path(module) else {
+            let Some(path) = modules.get(module) else {
                 continue;
             };
             if module == &file.module {
                 continue;
             }
-            let evidence = file.dependencies.entry(path).or_default();
-            if !evidence.contains(import) {
-                evidence.push(import.clone());
+            let evidence = file.dependencies.entry(path.clone()).or_default();
+            let kind = if matches!(import.import, urmare_python::StaticImport::Dynamic { .. }) {
+                DependencyEvidenceKind::DynamicImport
+            } else {
+                DependencyEvidenceKind::Import
+            };
+            let candidate = DependencyEvidence {
+                kind,
+                location: import.location,
+                import: Some(import.import.clone()),
+                name: None,
+            };
+            if !evidence.contains(&candidate) {
+                evidence.push(candidate);
+            }
+        }
+        if let urmare_python::StaticImport::From {
+            module: imported_module,
+            name,
+            level,
+        } = &import.import
+        {
+            let base =
+                resolve_base_module(&python_file, imported_module.as_deref(), *level, modules);
+            let exported = base
+                .as_deref()
+                .and_then(|base| exports.get(base))
+                .map(|names| {
+                    if name == "*" {
+                        names.values().flatten().cloned().collect::<BTreeSet<_>>()
+                    } else {
+                        names.get(name).cloned().unwrap_or_default()
+                    }
+                })
+                .unwrap_or_default();
+            for target_module in exported {
+                let Some(path) = modules.get(&target_module) else {
+                    continue;
+                };
+                if path == &file.path {
+                    continue;
+                }
+                let evidence = file.dependencies.entry(path.clone()).or_default();
+                let candidate = DependencyEvidence {
+                    kind: DependencyEvidenceKind::ReExport,
+                    location: import.location,
+                    import: Some(import.import.clone()),
+                    name: Some(name.clone()),
+                };
+                if !evidence.contains(&candidate) {
+                    evidence.push(candidate);
+                }
             }
         }
         file.resolutions.push(StoredResolution {
             import: import.clone(),
             resolution,
         });
+    }
+}
+
+fn resolve_base_module(
+    importer: &urmare_python::PythonFile,
+    module: Option<&str>,
+    level: u32,
+    modules: &BTreeMap<String, String>,
+) -> Option<String> {
+    let resolution = resolve_local_import_with(
+        importer,
+        &urmare_python::StaticImport::From {
+            module: module.map(str::to_owned),
+            name: "*".to_owned(),
+            level,
+        },
+        |candidate| modules.contains_key(candidate),
+    );
+    resolution
+        .resolved_modules
+        .into_iter()
+        .max_by_key(|candidate| candidate.split('.').count())
+}
+
+fn build_export_index(
+    files: &BTreeMap<String, StoredFile>,
+    modules: &BTreeMap<String, String>,
+) -> ExportIndex {
+    let mut exports = ExportIndex::new();
+    for _ in 0..=files.len() {
+        let mut next = exports.clone();
+        for file in files.values() {
+            for declaration in &file.pytest.exports {
+                let Some(name) = &declaration.name else {
+                    continue;
+                };
+                let target = declaration.module.as_deref().and_then(|module| {
+                    resolve_base_module(
+                        &file.python_file(),
+                        Some(module),
+                        declaration.level,
+                        modules,
+                    )
+                });
+                if declaration.wildcard {
+                    if let Some(target) = target.as_deref()
+                        && let Some(target_exports) = exports.get(target)
+                    {
+                        for (exported_name, targets) in target_exports {
+                            next.entry(file.module.clone())
+                                .or_default()
+                                .entry(exported_name.clone())
+                                .or_default()
+                                .extend(targets.iter().cloned());
+                        }
+                    }
+                    continue;
+                }
+                let target = target.or_else(|| {
+                    if declaration.module.is_some() {
+                        return None;
+                    }
+                    let candidate = format!("{}.{}", file.module, name);
+                    if modules.contains_key(&candidate) {
+                        Some(candidate)
+                    } else {
+                        // A literal __all__ entry usually names an attribute
+                        // defined by this module rather than another module.
+                        // Keep that export connected to the defining module;
+                        // prefer a real submodule when the names are
+                        // ambiguous at a package boundary.
+                        Some(file.module.clone())
+                    }
+                });
+                if let Some(target) = target {
+                    next.entry(file.module.clone())
+                        .or_default()
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(target);
+                }
+            }
+        }
+        if next == exports {
+            break;
+        }
+        exports = next;
+    }
+    exports
+}
+
+fn add_pytest_relationships(
+    files: &mut BTreeMap<String, StoredFile>,
+    modules: &BTreeMap<String, String>,
+) {
+    let paths: Vec<String> = files.keys().cloned().collect();
+    for file in files.values_mut() {
+        file.dependencies.retain(|_, evidence| {
+            evidence.retain(|item| {
+                !matches!(
+                    item.kind,
+                    DependencyEvidenceKind::PytestConfiguration
+                        | DependencyEvidenceKind::PytestFixture
+                        | DependencyEvidenceKind::PytestUsefixtures
+                        | DependencyEvidenceKind::PytestPlugin
+                )
+            });
+            !evidence.is_empty()
+        });
+    }
+    let conftests = paths
+        .iter()
+        .filter(|path| is_conftest_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let fixture_files = files
+        .iter()
+        .filter(|(_, file)| !file.pytest.fixtures.is_empty())
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+
+    for path in paths {
+        let Some(snapshot) = files.get(&path).cloned() else {
+            continue;
+        };
+        let applicable = applicable_conftests(&path, &conftests);
+        if snapshot.is_test {
+            for conftest in &applicable {
+                add_pytest_edge(
+                    files,
+                    &path,
+                    conftest,
+                    DependencyEvidenceKind::PytestConfiguration,
+                    "conftest visibility",
+                );
+            }
+            let mut requested = BTreeMap::<
+                String,
+                (
+                    DependencyEvidenceKind,
+                    urmare_python::SourceLocation,
+                    Option<String>,
+                ),
+            >::new();
+            for request in &snapshot.pytest.fixture_requests {
+                requested.insert(
+                    request.name.clone(),
+                    (
+                        DependencyEvidenceKind::PytestFixture,
+                        request.location,
+                        request.scope.clone(),
+                    ),
+                );
+            }
+            for request in &snapshot.pytest.usefixtures {
+                requested.insert(
+                    request.name.clone(),
+                    (
+                        DependencyEvidenceKind::PytestUsefixtures,
+                        request.location,
+                        request.scope.clone(),
+                    ),
+                );
+            }
+            let test_scopes = snapshot
+                .pytest
+                .fixture_requests
+                .iter()
+                .map(|request| request.scope.clone())
+                .collect::<BTreeSet<_>>();
+            for fixture_path in std::iter::once(&path).chain(applicable.iter()) {
+                if let Some(fixture_file) = files.get(fixture_path) {
+                    for fixture in &fixture_file.pytest.fixtures {
+                        if fixture.autouse
+                            && (fixture.scope.is_none() || test_scopes.contains(&fixture.scope))
+                        {
+                            requested.entry(fixture.name.clone()).or_insert((
+                                DependencyEvidenceKind::PytestFixture,
+                                fixture.location,
+                                fixture.scope.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+            for (name, (kind, request_location, scope)) in requested {
+                if let Some((fixture_path, location, _)) =
+                    visible_fixture(&path, scope.as_deref(), &name, &applicable, files)
+                {
+                    add_pytest_edge_with_location(
+                        files,
+                        &path,
+                        &fixture_path,
+                        kind,
+                        name,
+                        request_location.max(location),
+                    );
+                }
+            }
+        }
+        for plugin in &snapshot.pytest.pytest_plugins {
+            if let Some(plugin_path) = modules.get(&plugin.name) {
+                add_pytest_edge_with_location(
+                    files,
+                    &path,
+                    plugin_path,
+                    DependencyEvidenceKind::PytestPlugin,
+                    plugin.name.clone(),
+                    plugin.location,
+                );
+            }
+        }
+        for fixture_path in fixture_files.iter().filter(|candidate| {
+            *candidate == &path || applicable_conftests(candidate, &conftests).contains(&path)
+        }) {
+            let Some(fixture_file) = files.get(fixture_path).cloned() else {
+                continue;
+            };
+            for fixture in fixture_file.pytest.fixtures {
+                for parameter in fixture.parameters {
+                    if let Some((target, location, _)) = visible_fixture(
+                        fixture_path,
+                        fixture.scope.as_deref(),
+                        &parameter.name,
+                        &applicable_conftests(fixture_path, &conftests),
+                        files,
+                    ) {
+                        add_pytest_edge_with_location(
+                            files,
+                            fixture_path,
+                            &target,
+                            DependencyEvidenceKind::PytestFixture,
+                            parameter.name,
+                            location,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn applicable_conftests(path: &str, conftests: &[String]) -> Vec<String> {
+    let mut directory = Path::new(path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let mut result = Vec::new();
+    loop {
+        let candidate = directory.join("conftest.py");
+        let candidate = display_repository_path(&candidate);
+        if conftests.iter().any(|path| path == &candidate) {
+            result.push(candidate);
+        }
+        if !directory.pop() {
+            break;
+        }
+    }
+    result
+}
+
+fn is_conftest_path(path: &str) -> bool {
+    Path::new(path).file_name().and_then(|name| name.to_str()) == Some("conftest.py")
+}
+
+fn visible_fixture(
+    test_path: &str,
+    scope: Option<&str>,
+    name: &str,
+    conftests: &[String],
+    files: &BTreeMap<String, StoredFile>,
+) -> Option<(
+    String,
+    urmare_python::SourceLocation,
+    DependencyEvidenceKind,
+)> {
+    if let Some(file) = files.get(test_path)
+        && let Some(fixture) = file.pytest.fixtures.iter().find(|fixture| {
+            fixture.name == name && (fixture.scope.is_none() || fixture.scope.as_deref() == scope)
+        })
+    {
+        return Some((
+            test_path.to_owned(),
+            fixture.location,
+            DependencyEvidenceKind::PytestFixture,
+        ));
+    }
+    for conftest in conftests {
+        if let Some(file) = files.get(conftest)
+            && let Some(fixture) = file.pytest.fixtures.iter().find(|fixture| {
+                fixture.name == name
+                    && (fixture.scope.is_none() || fixture.scope.as_deref() == scope)
+            })
+        {
+            return Some((
+                conftest.clone(),
+                fixture.location,
+                DependencyEvidenceKind::PytestFixture,
+            ));
+        }
+    }
+    None
+}
+
+fn add_pytest_edge(
+    files: &mut BTreeMap<String, StoredFile>,
+    dependent: &str,
+    dependency: &str,
+    kind: DependencyEvidenceKind,
+    name: &str,
+) {
+    add_pytest_edge_with_location(
+        files,
+        dependent,
+        dependency,
+        kind,
+        name.to_owned(),
+        urmare_python::SourceLocation { line: 1, column: 1 },
+    );
+}
+
+fn add_pytest_edge_with_location(
+    files: &mut BTreeMap<String, StoredFile>,
+    dependent: &str,
+    dependency: &str,
+    kind: DependencyEvidenceKind,
+    name: String,
+    location: urmare_python::SourceLocation,
+) {
+    if dependent == dependency || !files.contains_key(dependency) {
+        return;
+    }
+    let Some(file) = files.get_mut(dependent) else {
+        return;
+    };
+    let evidence = file.dependencies.entry(dependency.to_owned()).or_default();
+    let candidate = DependencyEvidence {
+        kind,
+        location,
+        import: None,
+        name: Some(name),
+    };
+    if !evidence.contains(&candidate) {
+        evidence.push(candidate);
     }
 }
 
@@ -1033,6 +1437,8 @@ fn resolution_status(resolution: &LocalImportResolution) -> ImportResolutionStat
         ImportResolutionStatus::Resolved
     } else if resolution.failure == Some(ImportResolutionFailure::RelativeBeyondTopLevel) {
         ImportResolutionStatus::InvalidRelativeImport
+    } else if resolution.failure == Some(ImportResolutionFailure::UnresolvedDynamicImport) {
+        ImportResolutionStatus::UnresolvedDynamicImport
     } else {
         ImportResolutionStatus::Unresolved
     }
@@ -1541,6 +1947,7 @@ fn plan_incremental_update(
     let mut changed_modules = BTreeSet::new();
     let mut needs_resolution = BTreeSet::new();
     let mut observed_files = Vec::new();
+    let mut requires_relationship_rebuild = false;
 
     for key in &delta.paths {
         if !key.ends_with(".py") {
@@ -1562,6 +1969,9 @@ fn plan_incremental_update(
                 .as_ref()
                 .is_none_or(|current| current.module != old.module)
         {
+            if is_conftest_path(&old.path) {
+                requires_relationship_rebuild = true;
+            }
             changed_modules.insert(old.module.clone());
             modules.insert(old.module.clone(), None);
         }
@@ -1570,12 +1980,18 @@ fn plan_incremental_update(
     for (key, old, current) in observed_files {
         match (old, current) {
             (None, None) => {}
-            (Some(_old), None) => {
+            (Some(old), None) => {
+                if is_conftest_path(&key) || pytest_relationships_may_change(&old) {
+                    requires_relationship_rebuild = true;
+                }
                 files.insert(key.clone(), None);
                 work.modules_removed += 1;
                 work.records_removed += 1;
             }
             (None, Some(mut current)) => {
+                if is_conftest_path(&key) || pytest_relationships_may_change(&current) {
+                    requires_relationship_rebuild = true;
+                }
                 check_module_collision(&reader, &modules, &current.module, &key)?;
                 changed_modules.insert(current.module.clone());
                 modules.insert(current.module.clone(), Some(key.clone()));
@@ -1587,6 +2003,9 @@ fn plan_incremental_update(
                 work.records_added += 1;
             }
             (Some(old), Some(mut current)) => {
+                if current.pytest != old.pytest {
+                    requires_relationship_rebuild = true;
+                }
                 if old.module != current.module {
                     changed_modules.insert(current.module.clone());
                     check_module_collision(&reader, &modules, &current.module, &key)?;
@@ -1628,25 +2047,75 @@ fn plan_incremental_update(
         }
     }
 
-    for path in needs_resolution {
-        let mut file = match files.get(&path).cloned().flatten() {
-            Some(file) => file,
-            None => reader
-                .file(&path)
-                .map_err(|_| UpdateError::Storage)?
-                .ok_or(UpdateError::Storage)?,
-        };
-        old_files
-            .entry(path.clone())
-            .or_insert_with(|| reader.file(&path).ok().flatten());
-        resolve_file(&mut file, |module| {
-            planned_module_path(&reader, &modules, module)
-                .ok()
-                .flatten()
-        });
-        work.importers_reresolved += 1;
-        if old_files.get(&path).and_then(Option::as_ref) != Some(&file) {
-            files.insert(path, Some(file));
+    let mut module_snapshot = BTreeMap::new();
+    for stored in reader.files().map_err(|_| UpdateError::Storage)? {
+        module_snapshot.insert(stored.module, stored.path);
+    }
+    for (module, path) in &modules {
+        match path {
+            Some(path) => {
+                module_snapshot.insert(module.clone(), path.clone());
+            }
+            None => {
+                module_snapshot.remove(module);
+            }
+        }
+    }
+    if !requires_relationship_rebuild {
+        for path in needs_resolution {
+            let mut file = match files.get(&path).cloned().flatten() {
+                Some(file) => file,
+                None => reader
+                    .file(&path)
+                    .map_err(|_| UpdateError::Storage)?
+                    .ok_or(UpdateError::Storage)?,
+            };
+            old_files
+                .entry(path.clone())
+                .or_insert_with(|| reader.file(&path).ok().flatten());
+            resolve_file(&mut file, &module_snapshot, &ExportIndex::new());
+            work.importers_reresolved += 1;
+            if old_files.get(&path).and_then(Option::as_ref) != Some(&file) {
+                files.insert(path, Some(file));
+            }
+        }
+    }
+
+    if requires_relationship_rebuild {
+        let previous_files = reader
+            .files()
+            .map_err(|_| UpdateError::Storage)?
+            .into_iter()
+            .map(|file| (file.path.clone(), file))
+            .collect::<BTreeMap<_, _>>();
+        let mut all_files = previous_files.clone();
+        for (path, file) in &files {
+            match file {
+                Some(file) => {
+                    all_files.insert(path.clone(), file.clone());
+                }
+                None => {
+                    all_files.remove(path);
+                }
+            }
+        }
+        resolve_all_files(&mut all_files, &module_snapshot, &mut work);
+        for (path, file) in &all_files {
+            if previous_files.get(path) != Some(file) {
+                old_files
+                    .entry(path.clone())
+                    .or_insert_with(|| previous_files.get(path).cloned());
+                files.insert(path.clone(), Some(file.clone()));
+            }
+        }
+        for path in previous_files
+            .keys()
+            .filter(|path| !all_files.contains_key(*path))
+        {
+            old_files
+                .entry(path.clone())
+                .or_insert_with(|| previous_files.get(path).cloned());
+            files.insert(path.clone(), None);
         }
     }
 
@@ -1763,14 +2232,14 @@ fn current_file(
     work.files_read += 1;
     let hash = content_hash(&source);
     work.files_hashed += 1;
-    let imports = if previous.is_some_and(|previous| previous.content_hash == hash) {
+    let (imports, pytest) = if previous.is_some_and(|previous| previous.content_hash == hash) {
         previous
-            .map(|previous| previous.imports.clone())
+            .map(|previous| (previous.imports.clone(), previous.pytest.clone()))
             .unwrap_or_default()
     } else {
-        let imports = parse_imports_with_locations(&source, path).map_err(AnalysisError::from)?;
+        let parsed = parse_python(&source, path).map_err(AnalysisError::from)?;
         work.files_parsed += 1;
-        imports
+        (parsed.imports, parsed.pytest)
     };
     Ok(Some(StoredFile {
         path: display_repository_path(path),
@@ -1780,6 +2249,7 @@ fn current_file(
         state: StoredFileState::from_metadata(&metadata),
         content_hash: hash,
         imports,
+        pytest,
         resolutions: Vec::new(),
         dependencies: BTreeMap::new(),
     }))
@@ -1872,7 +2342,7 @@ fn apply_summary_delta(
     if let Some(old) = old {
         summary.python_files = summary.python_files.saturating_sub(1);
         summary.modules = summary.modules.saturating_sub(1);
-        summary.import_edges = summary.import_edges.saturating_sub(old.dependencies.len());
+        summary.import_edges = summary.import_edges.saturating_sub(import_edge_count(old));
         summary.tests = summary.tests.saturating_sub(usize::from(old.is_test));
         summary.unresolved_imports = summary
             .unresolved_imports
@@ -1881,10 +2351,30 @@ fn apply_summary_delta(
     if let Some(new) = new {
         summary.python_files += 1;
         summary.modules += 1;
-        summary.import_edges += new.dependencies.len();
+        summary.import_edges += import_edge_count(new);
         summary.tests += usize::from(new.is_test);
         summary.unresolved_imports += unresolved_count(new);
     }
+}
+
+fn import_edge_count(file: &StoredFile) -> usize {
+    file.dependencies
+        .values()
+        .filter(|evidence| {
+            evidence.iter().any(|item| {
+                matches!(
+                    item.kind,
+                    DependencyEvidenceKind::Import
+                        | DependencyEvidenceKind::DynamicImport
+                        | DependencyEvidenceKind::ReExport
+                )
+            })
+        })
+        .count()
+}
+
+fn pytest_relationships_may_change(file: &StoredFile) -> bool {
+    file.is_test || file.is_package || file.pytest != PytestFacts::default()
 }
 
 fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<u64, String> {
@@ -1954,12 +2444,14 @@ fn persist_update(database: &Database, update: &IncrementalUpdate) -> Result<u64
     Ok(bytes_written)
 }
 
-pub(crate) fn provenance(imports: &[LocatedImport]) -> Vec<ImportProvenance> {
-    imports
+pub(crate) fn provenance(evidence: &[DependencyEvidence]) -> Vec<ImportProvenance> {
+    evidence
         .iter()
-        .map(|import| ImportProvenance {
-            location: import.location,
-            import: import.import.clone(),
+        .filter_map(|item| {
+            item.import.clone().map(|import| ImportProvenance {
+                location: item.location,
+                import,
+            })
         })
         .collect()
 }
