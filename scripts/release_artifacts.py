@@ -391,6 +391,97 @@ def smoke_binary(binary: Path, version: str, fixture: Path) -> None:
         ],
         "Impact analysis",
     )
+    smoke_mcp(binary, fixture)
+
+
+def smoke_mcp(binary: Path, fixture: Path) -> None:
+    """Exercise MCP initialization, discovery, one tool call, and EOF shutdown."""
+    fixture = fixture.resolve()
+    messages = (
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "urmare-release-smoke", "version": "1"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": "tools", "method": "tools/list", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "validation_plan",
+                "arguments": {
+                    "source": {"kind": "files", "files": ["package/foo.py"]}
+                },
+            },
+        },
+    )
+    protocol_input = "".join(
+        json.dumps(message, separators=(",", ":")) + "\n" for message in messages
+    )
+    completed = subprocess.run(
+        [str(binary), "--root", str(fixture), "mcp"],
+        input=protocol_input,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise ArtifactError(
+            "MCP smoke test failed with exit "
+            f"{completed.returncode}:\nstdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
+    if completed.stderr:
+        raise ArtifactError(
+            f"MCP smoke test unexpectedly wrote to stderr:\n{completed.stderr}"
+        )
+    try:
+        responses = [
+            json.loads(line) for line in completed.stdout.splitlines() if line.strip()
+        ]
+    except json.JSONDecodeError as error:
+        raise ArtifactError(f"MCP stdout was not valid JSON-RPC: {error}") from error
+    if len(responses) != 3:
+        raise ArtifactError(
+            f"MCP smoke expected three responses, received {len(responses)}"
+        )
+    initialized, tools_response, plan_response = responses
+    if initialized.get("id") != 1 or initialized.get("result", {}).get(
+        "serverInfo", {}
+    ).get("name") != "urmare":
+        raise ArtifactError("MCP initialization response did not identify Urmare")
+    tools = tools_response.get("result", {}).get("tools")
+    if not isinstance(tools, list) or [tool.get("name") for tool in tools] != [
+        "validation_plan",
+        "explain_impact",
+    ]:
+        raise ArtifactError("MCP tool discovery did not return the exact Urmare tool set")
+    result = plan_response.get("result", {})
+    structured = result.get("structuredContent")
+    if (
+        result.get("isError") is not False
+        or not isinstance(structured, dict)
+        or structured.get("schema_version") != 1
+        or structured.get("changed") != ["package/foo.py"]
+    ):
+        raise ArtifactError("MCP validation_plan returned an invalid structured result")
+    content = result.get("content")
+    if not isinstance(content, list) or not content or content[0].get("type") != "text":
+        raise ArtifactError("MCP validation_plan omitted its text compatibility block")
+    try:
+        text_result = json.loads(content[0]["text"])
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ArtifactError("MCP text compatibility block was not valid JSON") from error
+    if text_result != structured:
+        raise ArtifactError("MCP text and structured validation results differ")
 
 
 def venv_executable(environment: Path, name: str) -> Path:

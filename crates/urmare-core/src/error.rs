@@ -34,6 +34,9 @@ pub enum AnalysisError {
         source: std::io::Error,
     },
 
+    #[error("repository root `{0}` is not a directory")]
+    RootNotDirectory(PathBuf),
+
     #[error("unable to read Python source `{path}`: {source}")]
     SourceRead {
         path: PathBuf,
@@ -98,6 +101,9 @@ pub enum AnalysisError {
 
     #[error("provide one or more changed files, `--changed`, or `--git-diff <base>`")]
     MissingChangedInput,
+
+    #[error("Git base must not be empty")]
+    EmptyGitBase,
 
     #[error(
         "provide exactly one change source: changed files, `--changed`, or `--git-diff <base>`"

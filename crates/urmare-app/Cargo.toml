@@ -1,0 +1,19 @@
+[package]
+name = "urmare-app"
+description = "Presentation-independent application operations for Urmare"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "urmare_app"
+path = "src/lib.rs"
+
+[dependencies]
+urmare-core = { path = "../urmare-core" }
+
+[dev-dependencies]
+tempfile = "3.20"

@@ -23,7 +23,9 @@ imports and favors impact recall over aggressive test reduction.
   locations;
 - supports flat, `src/`, and explicitly configured multi-root repositories;
 - maintains a persistent local index with bounded updates for Git repositories;
-- emits stable, versioned JSON for scripts, CI, and coding agents.
+- emits stable, versioned JSON for scripts, CI, and coding agents; and
+- exposes validation planning and dependency explanations to agents through a
+  local, read-only MCP server.
 
 ## Install
 
@@ -167,10 +169,36 @@ with the supplied target:
 uv run pytest tests/api/test_checkout.py
 ```
 
-Urmare plans validation but does not execute pytest. This is a CLI and JSON
-contract, not a native Codex, Claude Code, Cursor, or MCP integration. Agents
-and CI remain responsible for invoking the repository's established test
-environment.
+Urmare plans validation but does not execute pytest. Agents and CI remain
+responsible for invoking the repository's established test environment.
+
+## Local MCP server
+
+MCP-capable coding agents can call the same validation-plan and explanation
+operations directly, without constructing Urmare shell commands. Install
+Urmare persistently, then bind one stdio server process to one absolute
+repository root:
+
+```bash
+uv tool install urmare
+# or: pipx install urmare
+
+urmare --root /absolute/path/to/repository mcp
+```
+
+The server exposes exactly two read-only tools:
+
+- `validation_plan` returns the same schema-version-1 object as
+  `urmare plan ... --json`;
+- `explain_impact` returns the same object as `urmare why ... --json`.
+
+Every call refreshes the persistent index, so a long-running server observes
+later edits while retaining clean and incremental reuse. Protocol traffic is
+the only stdout output. Urmare never runs pytest or writes inside the analyzed
+repository, although it may update its private operating-system cache.
+
+See the [MCP setup guide](docs/mcp.md) for Codex, Claude Code, and Cursor
+configuration, tool schemas, the root security boundary, and troubleshooting.
 
 ## Configuration
 
@@ -213,9 +241,10 @@ hide content changes.
 
 ## JSON and exit codes
 
-Every command accepts `--json`. JSON is written to stdout, uses canonical
-repository-relative paths, and includes a `schema_version`. Failures leave
-stdout empty and write an actionable diagnostic to stderr.
+Every analysis command accepts `--json`. JSON is written to stdout, uses
+canonical repository-relative paths, and includes a `schema_version`. MCP
+returns the shared plan and explanation DTOs as `structuredContent`. CLI
+failures leave stdout empty and write an actionable diagnostic to stderr.
 
 An impact result has this concise shape:
 
@@ -325,7 +354,8 @@ Set `URMARE_BENCH_50000=1` to include the 50,000-file case.
 - non-Git repositories conservatively rebuild on every invocation;
 - broad impact and complete graph/debug output remain proportional to their
   result size;
-- no test execution, CI execution, MCP server, or hosted integration.
+- no test execution, CI execution, remote/hosted MCP transport, authentication,
+  or hosted integration.
 
 When Python semantics are ambiguous, Urmare conservatively includes certain
 local package and module loads. False positives are preferable to silently
@@ -350,14 +380,16 @@ cargo test --workspace --locked
 cargo +1.95.0 check --workspace --all-targets --locked
 ```
 
-The workspace separates the generic graph, Python analysis, application logic,
-and CLI into `urmare-graph`, `urmare-python`, `urmare-core`, and `urmare-cli`.
-Purpose-built fixture repositories live under `fixtures/python-projects/`.
+The workspace separates the generic graph, Python analysis, domain core,
+shared application operations, machine-readable contracts, CLI, and MCP
+adapter into focused crates. Purpose-built fixture repositories live under
+`fixtures/python-projects/`.
 
 Further reading:
 
 - [Product specification and design principles](docs/product_spec.md)
 - [Roadmap and upcoming milestones](docs/roadmap.md)
+- [Local MCP setup and security](docs/mcp.md)
 - [Performance methodology and observations](docs/performance.md)
 - [Release process](docs/releasing.md)
 

@@ -1,0 +1,28 @@
+[package]
+name = "urmare-mcp"
+description = "Local stdio MCP adapter for Urmare"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "urmare_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+urmare-app = { path = "../urmare-app" }
+urmare-contract = { path = "../urmare-contract" }
+urmare-core = { path = "../urmare-core" }
+
+[dev-dependencies]
+jsonschema = { version = "0.56", default-features = false }
+tempfile = "3.20"
