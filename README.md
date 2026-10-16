@@ -174,6 +174,8 @@ responsible for invoking the repository's established test environment.
 
 ## Local MCP server
 
+MCP support requires Urmare 0.4.0 or newer.
+
 MCP-capable coding agents can call the same validation-plan and explanation
 operations directly, without constructing Urmare shell commands. Install
 Urmare persistently, then bind one stdio server process to one absolute

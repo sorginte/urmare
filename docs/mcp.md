@@ -18,6 +18,10 @@ uv tool install urmare
 pipx install urmare
 ```
 
+MCP support requires Urmare 0.4.0 or newer. Upgrade an existing installation
+with `uv tool upgrade urmare` or `pipx upgrade urmare`, then check
+`urmare --version` before configuring a client.
+
 Start the server with an absolute repository path:
 
 ```bash

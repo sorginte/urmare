@@ -35,7 +35,7 @@ Sorginte service, Python package installation, an LLM, or network access.
 ```text
 v0.3 validation plans (released)
     ↓
-local MCP tools (implemented for the next release)
+v0.4 local MCP tools (release preparation)
     ↓
 agent-specific onboarding and enforcement
     ↓
@@ -73,9 +73,9 @@ Definition of done:
 - failures leave JSON stdout empty and retain established exit semantics; and
 - no plan executes pytest or depends on a specific coding-agent product.
 
-## Next release — Local MCP integration
+## v0.4.0 — Local MCP integration
 
-Status: implemented; release and versioning remain separate work
+Status: implemented; preparing the v0.4.0 release
 
 Goal: expose Urmare as native, read-only repository intelligence to MCP-capable
 coding agents without changing analysis semantics.
