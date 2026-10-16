@@ -24,8 +24,11 @@ Urmare currently provides:
 - deleted-file and previous-rename identities;
 - conservative full validation after configuration changes;
 - dependency explanations through `urmare why`;
+- deterministic schema-version-1 validation plans;
 - a persistent incremental index;
-- stable, versioned CLI JSON contracts; and
+- stable, versioned CLI JSON contracts;
+- a local, repository-bound stdio MCP server with validation and explanation
+  tools; and
 - reproducible synthetic and real-project benchmark infrastructure.
 
 The project remains local-first. Core analysis does not require a hosted
@@ -34,11 +37,9 @@ Sorginte service, Python package installation, an LLM, or network access.
 ## Delivery sequence
 
 ```text
-v0.3 validation plans
+v0.3 validation plans (released)
     ↓
-repository dogfooding
-    ↓
-local MCP tools
+v0.4 local MCP tools (release preparation)
     ↓
 agent-specific onboarding and enforcement
     ↓
@@ -49,7 +50,7 @@ optional configurable validation execution
 
 ## v0.3.0 — Agent validation plans
 
-Status: release candidate
+Status: released
 
 Goal: let a terminal-capable coding agent obtain one deterministic plan after
 editing Python code.
@@ -68,18 +69,6 @@ Implemented:
 - [x] offline core and CLI coverage
 - [x] coding-agent workflow documentation
 
-Recommended before release:
-
-- [ ] make `urmare plan --changed --json` usable against the Urmare repository
-  itself by excluding the intentionally invalid Python syntax fixture from the
-  root analysis configuration;
-- [ ] verify the dogfooding workflow for a selective change, a no-test change,
-  and a configuration-triggered full plan;
-- [ ] merge the version change and wait for required CI on the exact release
-  commit; and
-- [ ] complete the protected-tag release process in
-  [releasing.md](releasing.md).
-
 Definition of done:
 
 - the installed `urmare` binary reports version `0.3.0`;
@@ -88,27 +77,28 @@ Definition of done:
 - failures leave JSON stdout empty and retain established exit semantics; and
 - no plan executes pytest or depends on a specific coding-agent product.
 
-## Next — Local MCP integration
+## v0.4.0 — Local MCP integration
 
-Status: proposed next milestone
+Status: implemented; preparing the v0.4.0 release
 
 Goal: expose Urmare as native, read-only repository intelligence to MCP-capable
 coding agents without changing analysis semantics.
 
 Scope:
 
-- [ ] add a local stdio MCP server distributed with Urmare;
-- [ ] bind each server process to one canonical repository root;
-- [ ] expose a validation-plan tool backed directly by the core
+- [x] add a local stdio MCP server to the existing Urmare executable;
+- [x] bind each server process to one canonical repository root;
+- [x] expose a validation-plan tool backed directly by the core
   `ValidationPlan` model;
-- [ ] expose an impact-explanation tool backed by `urmare why` semantics;
-- [ ] return schema-validated structured content rather than shell commands;
-- [ ] share DTO conversion so CLI JSON and MCP results cannot drift;
-- [ ] keep protocol traffic on stdout and diagnostics on stderr;
-- [ ] reject path escapes, conflicting sources, invalid Git bases, and roots
+- [x] expose an impact-explanation tool backed by `urmare why` semantics;
+- [x] return schema-validated structured content rather than shell commands;
+- [x] share DTO conversion so CLI JSON and MCP results cannot drift;
+- [x] keep protocol traffic on stdout and diagnostics on stderr;
+- [x] reject path escapes, conflicting sources, invalid Git bases, and roots
   outside the server boundary;
-- [ ] document local installation for supported MCP clients; and
-- [ ] add offline protocol, lifecycle, schema, error, cache, and packaging tests.
+- [x] document local installation and vendor-documented client configuration;
+  and
+- [x] add offline protocol, lifecycle, schema, error, cache, and packaging tests.
 
 Definition of done:
 
@@ -117,8 +107,8 @@ Definition of done:
 - the MCP plan is semantically identical to `urmare plan --json`;
 - the server never modifies the analyzed repository;
 - warm calls preserve bounded incremental behavior; and
-- Codex, Claude Code, and Cursor setup is verified without claiming deeper
-  native integration than each client provides.
+- client configuration follows vendor documentation, with live-client testing
+  status stated explicitly rather than implying unverified compatibility.
 
 Not included in this milestone:
 
@@ -130,7 +120,7 @@ Not included in this milestone:
 
 ## Next — Agent onboarding and enforcement
 
-Status: follows local MCP
+Status: follows the local MCP release
 
 Goal: make correct use of the validation plan repeatable instead of relying on
 an agent to infer the workflow.
@@ -198,7 +188,7 @@ Before Urmare executes validation itself, the project must specify:
 This work must not turn Urmare into a test framework, package manager, build
 system, or CI provider.
 
-## v0.3.x — Analysis coverage milestone
+## Next — Analysis coverage milestone
 
 Status: implemented on the coverage branch; release scheduling is separate
 

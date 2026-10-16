@@ -7,10 +7,11 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use thiserror::Error;
+use urmare_app::{ChangeSelection, ExplanationContext, RepositoryApplication};
 use urmare_core::{
-    AnalysisError, DependencyPath, FullValidationReason, GitDiffAnalysis, GraphInspection,
-    ImpactResult, ImportResolutionStatus, RepositoryAnalysis, ValidationMode, ValidationPlan,
-    ValidationStepKind, discover_git_repository_root, display_repository_path,
+    AnalysisError, DependencyPath, FullValidationReason, GraphInspection, ImpactResult,
+    ImportResolutionStatus, RepositoryAnalysis, ValidationMode, ValidationPlan, ValidationStepKind,
+    display_repository_path,
 };
 
 const LIST_LIMIT: usize = 25;
@@ -116,6 +117,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run the local, read-only Model Context Protocol server over stdio.
+    #[command(
+        after_help = "Example:\n  urmare --root /absolute/path/to/repository mcp\n\nThe server is permanently bound to the canonical repository root and writes protocol messages only to stdout."
+    )]
+    Mcp,
 }
 
 #[derive(Args, Debug)]
@@ -144,26 +150,39 @@ enum CliError {
 
     #[error("unable to write command output: {0}")]
     Output(#[from] io::Error),
+
+    #[error("the MCP server requires `--root /absolute/path/to/repository`")]
+    MissingMcpRoot,
+
+    #[error(transparent)]
+    Mcp(#[from] urmare_mcp::McpServerError),
 }
 
 impl CliError {
     fn exit_code(&self) -> u8 {
         match self {
             Self::Json(_) | Self::Output(_) => 1,
-            Self::Analysis(
-                AnalysisError::InvalidGraph(_)
-                | AnalysisError::MissingNodeMetadata(_)
-                | AnalysisError::MissingModule(_)
-                | AnalysisError::MissingEdgeProvenance { .. }
-                | AnalysisError::IndexUnavailable(_),
-            ) => 1,
-            Self::Analysis(
-                AnalysisError::Config(_)
-                | AnalysisError::MissingChangedInput
-                | AnalysisError::ConflictingChangedInput,
-            ) => 2,
-            Self::Analysis(_) => 3,
+            Self::MissingMcpRoot => 2,
+            Self::Mcp(urmare_mcp::McpServerError::RootNotAbsolute(_)) => 2,
+            Self::Mcp(urmare_mcp::McpServerError::Analysis(error)) => analysis_exit_code(error),
+            Self::Mcp(_) => 1,
+            Self::Analysis(error) => analysis_exit_code(error),
         }
+    }
+}
+
+fn analysis_exit_code(error: &AnalysisError) -> u8 {
+    match error {
+        AnalysisError::InvalidGraph(_)
+        | AnalysisError::MissingNodeMetadata(_)
+        | AnalysisError::MissingModule(_)
+        | AnalysisError::MissingEdgeProvenance { .. }
+        | AnalysisError::IndexUnavailable(_) => 1,
+        AnalysisError::Config(_)
+        | AnalysisError::MissingChangedInput
+        | AnalysisError::EmptyGitBase
+        | AnalysisError::ConflictingChangedInput => 2,
+        _ => 3,
     }
 }
 
@@ -216,7 +235,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
             }
         }
         Command::Plan { changes, json } => {
-            let plan = ValidationPlan::from_impact(analyze_changes(root.as_deref(), &changes)?);
+            let (application, selection) = selected_changes(root.as_deref(), &changes)?;
+            let plan = application.validation_plan(&selection)?;
             if json {
                 write_json(&crate::json::plan(&plan)?)?;
             } else {
@@ -253,24 +273,24 @@ fn run(cli: Cli) -> Result<(), CliError> {
             json,
         } => {
             let git_aware = changed || git_diff.is_some();
-            let root = selected_root(root.as_deref(), git_aware)?;
-            let explanation = match (changed, git_diff) {
-                (false, None) => {
-                    RepositoryAnalysis::build(&root)?.why(&changed_file, &affected_file)?
-                }
-                (true, None) => {
-                    GitDiffAnalysis::build(&root, "HEAD")?.why(&changed_file, &affected_file)?
-                }
-                (false, Some(base)) => {
-                    GitDiffAnalysis::build(&root, &base)?.why(&changed_file, &affected_file)?
-                }
+            let application = RepositoryApplication::select(root.as_deref(), git_aware)?;
+            let context = match (changed, git_diff) {
+                (false, None) => ExplanationContext::Current,
+                (true, None) => ExplanationContext::Changed,
+                (false, Some(base)) => ExplanationContext::GitDiff { base },
                 (true, Some(_)) => return Err(AnalysisError::ConflictingChangedInput.into()),
             };
+            let explanation =
+                application.explain_impact(&changed_file, &affected_file, &context)?;
             if json {
                 write_json(&crate::json::why(&explanation)?)?;
             } else {
                 print_dependency_path(&explanation);
             }
+        }
+        Command::Mcp => {
+            let root = root.as_deref().ok_or(CliError::MissingMcpRoot)?;
+            urmare_mcp::run(root)?;
         }
     }
 
@@ -278,30 +298,36 @@ fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 fn analyze_changes(root: Option<&Path>, changes: &ChangeSource) -> Result<ImpactResult, CliError> {
+    let (application, selection) = selected_changes(root, changes)?;
+    application.analyze(&selection).map_err(CliError::from)
+}
+
+fn selected_changes(
+    root: Option<&Path>,
+    changes: &ChangeSource,
+) -> Result<(RepositoryApplication, ChangeSelection), CliError> {
     let git_aware = changes.changed || changes.git_diff.is_some();
-    let root = selected_root(root, git_aware)?;
-    match (
+    let application = RepositoryApplication::select(root, git_aware)?;
+    let selection = match (
         changes.files.is_empty(),
         changes.changed,
         changes.git_diff.as_deref(),
     ) {
-        (false, false, None) => Ok(RepositoryAnalysis::build(&root)?.impact_many(&changes.files)?),
-        (true, true, None) => Ok(GitDiffAnalysis::build(&root, "HEAD")?.impact()?),
-        (true, false, Some(base)) => Ok(GitDiffAnalysis::build(&root, base)?.impact()?),
-        (true, false, None) => Err(AnalysisError::MissingChangedInput.into()),
-        _ => Err(AnalysisError::ConflictingChangedInput.into()),
-    }
+        (false, false, None) => ChangeSelection::Files(changes.files.clone()),
+        (true, true, None) => ChangeSelection::Changed,
+        (true, false, Some(base)) => ChangeSelection::GitDiff {
+            base: base.to_owned(),
+        },
+        (true, false, None) => return Err(AnalysisError::MissingChangedInput.into()),
+        _ => return Err(AnalysisError::ConflictingChangedInput.into()),
+    };
+    Ok((application, selection))
 }
 
 fn selected_root(root: Option<&Path>, discover_git: bool) -> Result<PathBuf, CliError> {
-    let selected = root.unwrap_or_else(|| Path::new("."));
-    if discover_git && root.is_none() {
-        discover_git_repository_root(selected)
-            .map_err(AnalysisError::from)
-            .map_err(CliError::from)
-    } else {
-        Ok(selected.to_path_buf())
-    }
+    Ok(RepositoryApplication::select(root, discover_git)?
+        .root()
+        .to_path_buf())
 }
 
 fn write_json(output: &str) -> Result<(), io::Error> {

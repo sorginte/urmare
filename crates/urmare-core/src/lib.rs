@@ -28,7 +28,7 @@ pub use model::{
     ValidationPlan, ValidationStep, ValidationStepKind,
 };
 pub use repository::{AnalysisTimings, QueryProfile, RepositoryAnalysis};
-pub use urmare_python::{SourceLocation, StaticImport};
+pub use urmare_python::{DynamicImportApi, SourceLocation, StaticImport};
 
 use std::path::Path;
 

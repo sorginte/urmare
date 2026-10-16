@@ -31,6 +31,9 @@ fn top_level_help_points_to_command_specific_options() {
         ))
         .stdout(predicate::str::contains(
             "plan    Create a deterministic pytest validation plan",
+        ))
+        .stdout(predicate::str::contains(
+            "mcp     Run the local, read-only Model Context Protocol server",
         ));
 }
 
@@ -102,6 +105,15 @@ fn command_help_documents_options_constraints_and_examples() {
         .stdout(predicate::str::contains(
             "urmare why src/payments/service.py tests/test_service.py --git-diff main --json",
         ));
+
+    urmare()
+        .args(["mcp", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "urmare --root /absolute/path/to/repository mcp",
+        ))
+        .stdout(predicate::str::contains("protocol messages only to stdout"));
 }
 
 #[test]

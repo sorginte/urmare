@@ -153,10 +153,13 @@ pub enum ConfigError {
     DuplicateExcludePattern(String),
 
     #[error(transparent)]
-    InvalidExcludePattern {
-        #[from]
-        source: ExcludePatternError,
-    },
+    InvalidExcludePattern { source: ExcludePatternError },
+}
+
+impl From<ExcludePatternError> for ConfigError {
+    fn from(source: ExcludePatternError) -> Self {
+        Self::InvalidExcludePattern { source }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

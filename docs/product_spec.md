@@ -463,6 +463,7 @@ urmare [--root PATH] impact <FILE...|--changed|--git-diff BASE> [--json|--all]
 urmare [--root PATH] plan <FILE...|--changed|--git-diff BASE> [--json]
 urmare [--root PATH] tests --affected <FILE...|--changed|--git-diff BASE> [--json]
 urmare [--root PATH] why CHANGED_FILE AFFECTED_FILE [--changed|--git-diff BASE] [--json]
+urmare --root /absolute/path/to/repository mcp
 ```
 
 Each command's alternative change sources are mutually exclusive. An explicit
@@ -689,6 +690,45 @@ tests/api/test_checkout.py
   -> src/payments/stripe.py
      via src/payments/service.py:1:15  from . import stripe
 ```
+
+---
+
+## `urmare mcp`
+
+The existing `urmare` executable can expose the validation-plan and dependency
+explanation operations through a local stdio Model Context Protocol server:
+
+```bash
+urmare --root /absolute/path/to/repository mcp
+```
+
+MCP requires an explicit absolute root. The process resolves and canonicalizes
+that root before initialization and remains bound to it. Requests cannot
+provide a root or inherit an MCP client's working directory.
+
+The server exposes exactly two tools:
+
+- `validation_plan`, with `files`, `changed`, and `git_diff` source variants;
+- `explain_impact`, with required `current`, `changed`, or `git_diff` context.
+
+These are protocol adapters over the same application operations used by
+`plan` and `why`. They neither spawn the CLI nor parse its output. The CLI and
+MCP share schema-version-1 DTO conversion, so successful MCP
+`structuredContent` is structurally identical to equivalent CLI JSON. Tool
+input and output schemas are generated from the Rust types.
+
+Each request refreshes repository analysis through the persistent index rather
+than retaining a startup graph. Calls are serialized within the process: clean
+calls reuse the index, supported file edits receive bounded incremental work,
+and correctness fallbacks remain unchanged. A normal analysis error is an MCP
+tool error and does not terminate the server.
+
+The server is local and read-only with respect to the repository. It may write
+Urmare's private operating-system cache, but does not invoke pytest, accept
+shell commands, make network requests, or modify files under the canonical
+root. Only stdio transport is supported; stdout contains protocol traffic only
+and diagnostics use stderr. Remote/hosted transport and authentication remain
+out of scope. Operational setup is specified in [mcp.md](mcp.md).
 
 ---
 
@@ -1087,6 +1127,12 @@ additive `steps` array with the exact import evidence for every path hop:
 
 Schema stability becomes increasingly important once CI/agent integrations exist.
 
+Plan and explanation DTOs form one shared serialization boundary used by both
+CLI JSON and MCP `structuredContent`. Core domain models remain independent of
+Serde and protocol presentation. Optional `full_validation` is omitted when
+absent rather than serialized as `null`; MCP compatibility text is a JSON
+serialization of the exact same DTO value.
+
 All serialized file paths should use the canonical repository-relative normalized representation rather than machine-specific absolute paths.
 
 ## Exit codes
@@ -1241,7 +1287,7 @@ must never prevent correct analysis.
 
 # CI Vision
 
-The current integration boundary is the deterministic CLI/JSON plan:
+The portable CI integration boundary is the deterministic CLI/JSON plan:
 
 ```bash
 urmare plan --git-diff origin/main --json
@@ -1249,7 +1295,8 @@ urmare plan --git-diff origin/main --json
 
 CI should independently recompute this plan rather than trusting an agent's
 earlier result, then invoke every step through the repository's established
-environment. Urmare does not execute those steps.
+environment. Agents may obtain the identical DTO through local MCP, but Urmare
+does not execute those steps and CI must not trust an earlier agent result.
 
 Eventually:
 
@@ -1280,11 +1327,17 @@ Urmare produces the plan rather than attempting to become a CI execution platfor
 
 # Coding-Agent Vision
 
-`urmare plan` is the current coding-agent interface. It is a portable CLI and
-JSON contract. A terminal-capable agent can use the contract without a hosted
-Sorginte service. A local MCP adapter, when present in the distribution, must
-call the same core operations and return the same DTOs; it does not introduce
-new analysis semantics.
+Urmare provides two coding-agent adapters over the same deterministic
+application layer:
+
+- terminal-capable agents can invoke `urmare plan ... --json` and
+  `urmare why ... --json`;
+- MCP-capable agents can discover and call `validation_plan` and
+  `explain_impact` through a repository-bound local stdio server.
+
+This is a native MCP protocol adapter, not agent-specific orchestration. Urmare
+does not claim proprietary integration with Codex, Claude Code, Cursor, or
+another client, and it requires no hosted Sorginte service.
 
 The recommended workflow is:
 
@@ -1320,9 +1373,9 @@ established environment uses uv, the agent executes:
 uv run pytest tests/api/test_checkout.py
 ```
 
-Urmare supplies the target but does not run pytest. MCP adapters and other
-clients remain responsible for invoking the repository's established test
-environment.
+Urmare supplies the target but does not run pytest. The MCP adapter preserves
+that boundary: the agent remains responsible for executing every returned
+validation step and CI should independently recompute the plan.
 
 ---
 
@@ -1347,19 +1400,19 @@ canonical Python-tool installation channel.
 A release such as:
 
 ```text
-v0.3.0
+v0.4.0
 ```
 
 corresponds to these platform-specific archives:
 
 ```text
-urmare-v0.3.0-aarch64-apple-darwin.tar.gz
-urmare-v0.3.0-x86_64-apple-darwin.tar.gz
+urmare-v0.4.0-aarch64-apple-darwin.tar.gz
+urmare-v0.4.0-x86_64-apple-darwin.tar.gz
 
-urmare-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
-urmare-v0.3.0-aarch64-unknown-linux-gnu.tar.gz
+urmare-v0.4.0-x86_64-unknown-linux-gnu.tar.gz
+urmare-v0.4.0-aarch64-unknown-linux-gnu.tar.gz
 
-urmare-v0.3.0-x86_64-pc-windows-msvc.zip
+urmare-v0.4.0-x86_64-pc-windows-msvc.zip
 ```
 
 The public GitHub Release also contains `SHA256SUMS`, but does not contain
@@ -1519,9 +1572,14 @@ Miez is a separate project and explicitly outside Urmare's scope.
 
 ---
 
-# Non-Goals for MVP
+# Original MVP non-goals and current boundaries
 
-Do not implement:
+The original MVP deliberately excluded MCP while the deterministic analysis,
+JSON contracts, and incremental index were established. Local read-only MCP is
+now a post-MVP adapter over those capabilities; remote or hosted MCP remains
+outside the product boundary.
+
+Do not implement as part of the current product slice:
 
 - dependency resolution from package indexes
 - test framework replacement
@@ -1533,7 +1591,7 @@ Do not implement:
 - GitHub application
 - web dashboard
 - LLM functionality
-- MCP server
+- remote or hosted MCP transport and authentication
 - service discovery
 - Docker analysis
 - framework-specific semantics

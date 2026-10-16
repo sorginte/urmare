@@ -17,7 +17,10 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+urmare-app = { path = "../urmare-app" }
+urmare-contract = { path = "../urmare-contract" }
 urmare-core = { path = "../urmare-core" }
+urmare-mcp = { path = "../urmare-mcp" }
 
 [dev-dependencies]
 assert_cmd = "2.0"
