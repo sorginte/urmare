@@ -1,6 +1,13 @@
-# Urmare
+<p align="center">
+  <img src="logo/urmare-transparent.png" alt="Urmare logo" width="160" height="160">
+</p>
 
-Urmare is a fast, deterministic impact-analysis tool for Python repositories.
+<h1 align="center">Urmare</h1>
+
+<p align="center">
+  Fast, deterministic impact analysis for Python repositories.
+</p>
+
 It answers one question:
 
 > Given a Python code change, what follows from it?
