@@ -197,6 +197,16 @@ advertised by `tools/list`. Inputs reject unknown and conflicting fields.
 Arrays and result paths are deterministic, complete, normalized, and
 repository-relative.
 
+Coverage changes use the same shared contract: explanation steps can include
+an optional `evidence` array for dynamic imports, re-exports, pytest
+configuration, fixtures, marks, and local plugins. Ordinary import fields are
+preserved and empty evidence arrays are omitted. Plans retain schema version 1
+and expose conservative fallback reasons through `full_validation`, including
+`unresolved_dynamic_import`, `unsupported_pytest_relationship`, and
+`unsupported_exports`. Its historical `configuration_paths` field identifies
+the repository-relative files that triggered the fallback. These additions
+are advertised in the generated MCP output schemas as well as CLI JSON.
+
 ## Read-only and security boundaries
 
 The canonical root supplied at startup is the server's filesystem capability

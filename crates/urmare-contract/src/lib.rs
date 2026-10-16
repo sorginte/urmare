@@ -7,8 +7,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use urmare_core::{
-    DependencyPath, FullValidationReason, ImportProvenance, StaticImport, ValidationMode,
-    ValidationPlan, ValidationStepKind, display_repository_path,
+    DependencyEvidence, DependencyEvidenceKind, DependencyPath, FullValidationReason,
+    ImportProvenance, StaticImport, ValidationMode, ValidationPlan, ValidationStepKind,
+    display_repository_path,
 };
 
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
@@ -70,6 +71,9 @@ pub struct FullValidationOutput {
 #[serde(rename_all = "snake_case")]
 pub enum FullValidationReasonOutput {
     ConfigurationChanged,
+    UnresolvedDynamicImport,
+    UnsupportedPytestRelationship,
+    UnsupportedExports,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -96,6 +100,34 @@ pub struct DependencyStepOutput {
     pub dependent: String,
     pub dependency: String,
     pub imports: Vec<ImportProvenanceOutput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<DependencyEvidenceOutput>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyEvidenceOutput {
+    pub kind: DependencyEvidenceKindOutput,
+    #[schemars(range(min = 1))]
+    pub line: usize,
+    #[schemars(range(min = 1))]
+    pub column: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import: Option<StaticImportOutput>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyEvidenceKindOutput {
+    Import,
+    DynamicImport,
+    ReExport,
+    PytestConfiguration,
+    PytestFixture,
+    PytestUsefixtures,
+    PytestPlugin,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -119,6 +151,21 @@ pub enum StaticImportOutput {
         name: String,
         level: u32,
     },
+    Dynamic {
+        api: DynamicImportApiOutput,
+        module: Option<String>,
+        package: Option<String>,
+        level: u32,
+        fromlist: Vec<String>,
+        reason: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicImportApiOutput {
+    ImportModule,
+    BuiltinImport,
 }
 
 impl From<&ValidationPlan> for PlanOutput {
@@ -155,6 +202,15 @@ impl From<&ValidationPlan> for PlanOutput {
                         FullValidationReason::ConfigurationChanged => {
                             FullValidationReasonOutput::ConfigurationChanged
                         }
+                        FullValidationReason::UnresolvedDynamicImport => {
+                            FullValidationReasonOutput::UnresolvedDynamicImport
+                        }
+                        FullValidationReason::UnsupportedPytestRelationship => {
+                            FullValidationReasonOutput::UnsupportedPytestRelationship
+                        }
+                        FullValidationReason::UnsupportedExports => {
+                            FullValidationReasonOutput::UnsupportedExports
+                        }
                     },
                     configuration_paths: paths(&validation.configuration_paths),
                 }
@@ -185,6 +241,7 @@ impl From<&DependencyPath> for DependencyPathOutput {
                     dependent: display_repository_path(&step.dependent),
                     dependency: display_repository_path(&step.dependency),
                     imports: provenance(&step.imports),
+                    evidence: dependency_evidence(&step.evidence),
                 })
                 .collect(),
         }
@@ -204,20 +261,81 @@ fn provenance(imports: &[ImportProvenance]) -> Vec<ImportProvenanceOutput> {
         .map(|provenance| ImportProvenanceOutput {
             line: provenance.location.line,
             column: provenance.location.column,
-            import: match &provenance.import {
-                StaticImport::Import { module } => StaticImportOutput::Import {
-                    module: module.clone(),
-                },
-                StaticImport::From {
-                    module,
-                    name,
-                    level,
-                } => StaticImportOutput::From {
-                    module: module.clone(),
-                    name: name.clone(),
-                    level: *level,
-                },
+            import: StaticImportOutput::from(&provenance.import),
+        })
+        .collect()
+}
+
+impl From<&StaticImport> for StaticImportOutput {
+    fn from(import: &StaticImport) -> Self {
+        match import {
+            StaticImport::Import { module } => StaticImportOutput::Import {
+                module: module.clone(),
             },
+            StaticImport::From {
+                module,
+                name,
+                level,
+            } => StaticImportOutput::From {
+                module: module.clone(),
+                name: name.clone(),
+                level: *level,
+            },
+            StaticImport::Dynamic {
+                api,
+                module,
+                package,
+                level,
+                fromlist,
+                reason,
+            } => StaticImportOutput::Dynamic {
+                api: match api {
+                    urmare_core::DynamicImportApi::ImportModule => {
+                        DynamicImportApiOutput::ImportModule
+                    }
+                    urmare_core::DynamicImportApi::BuiltinImport => {
+                        DynamicImportApiOutput::BuiltinImport
+                    }
+                },
+                module: module.clone(),
+                package: package.clone(),
+                level: *level,
+                fromlist: fromlist.clone(),
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
+/// Converts relationship evidence for graph inspection and dependency explanations.
+/// Ordinary imports retain their existing `imports` representation; additional
+/// evidence is omitted when absent so schema-version-1 static output is unchanged.
+pub fn dependency_evidence(items: &[DependencyEvidence]) -> Vec<DependencyEvidenceOutput> {
+    items
+        .iter()
+        .filter(|item| item.kind != DependencyEvidenceKind::Import)
+        .map(|item| DependencyEvidenceOutput {
+            kind: match item.kind {
+                DependencyEvidenceKind::Import => DependencyEvidenceKindOutput::Import,
+                DependencyEvidenceKind::DynamicImport => {
+                    DependencyEvidenceKindOutput::DynamicImport
+                }
+                DependencyEvidenceKind::ReExport => DependencyEvidenceKindOutput::ReExport,
+                DependencyEvidenceKind::PytestConfiguration => {
+                    DependencyEvidenceKindOutput::PytestConfiguration
+                }
+                DependencyEvidenceKind::PytestFixture => {
+                    DependencyEvidenceKindOutput::PytestFixture
+                }
+                DependencyEvidenceKind::PytestUsefixtures => {
+                    DependencyEvidenceKindOutput::PytestUsefixtures
+                }
+                DependencyEvidenceKind::PytestPlugin => DependencyEvidenceKindOutput::PytestPlugin,
+            },
+            line: item.location.line,
+            column: item.location.column,
+            name: item.name.clone(),
+            import: item.import.as_ref().map(StaticImportOutput::from),
         })
         .collect()
 }
@@ -277,6 +395,7 @@ mod tests {
             steps: vec![DependencyStep {
                 dependent: PathBuf::from("tests/test_core.py"),
                 dependency: PathBuf::from("src/pkg/core.py"),
+                evidence: Vec::new(),
                 imports: vec![ImportProvenance {
                     location: SourceLocation {
                         line: 1,

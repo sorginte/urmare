@@ -239,6 +239,142 @@ fn initialization_discovery_and_cli_contract_parity() {
 }
 
 #[test]
+fn coverage_evidence_and_fallbacks_match_cli_after_main_merge() {
+    let repository = initialized_git_repository();
+    let root = repository.path();
+    for (path, source) in [
+        ("src/pkg/source.py", "VALUE = 1\n"),
+        (
+            "src/pkg/__init__.py",
+            "from .source import VALUE as PublicValue\n",
+        ),
+        ("src/consumer.py", "from pkg import PublicValue\n"),
+        (
+            "src/loader.py",
+            "import importlib as il\nil.import_module(\"pkg.source\")\n",
+        ),
+        ("src/pkg/plugin_dependency.py", "VALUE = 1\n"),
+        (
+            "src/pkg/plugin.py",
+            "import pytest\nfrom . import plugin_dependency\n@pytest.fixture\ndef plugin_value():\n    return plugin_dependency.VALUE\n",
+        ),
+        ("conftest.py", "pytest_plugins = []\n"),
+        ("tests/test_consumer.py", "import consumer\n"),
+        (
+            "tests/test_fixture.py",
+            "def test_value(plugin_value):\n    assert plugin_value\n",
+        ),
+        (
+            "src/computed.py",
+            "import importlib\nimportlib.import_module(module_name)\n",
+        ),
+        ("src/exports.py", "__all__ = exported_names\n"),
+        (
+            "tests/test_lookup.py",
+            "def test_lookup(request):\n    request.getfixturevalue(fixture_name)\n",
+        ),
+    ] {
+        write(root, path, source);
+    }
+    git(root, &["add", "."]);
+    commit(root, "coverage fixture");
+    let (mut server, _) = McpProcess::start(root);
+    server.notify_initialized();
+
+    for (id, changed, affected, evidence_kind) in [
+        (
+            2,
+            "conftest.py",
+            "tests/test_fixture.py",
+            "pytest_configuration",
+        ),
+        (3, "src/pkg/source.py", "src/consumer.py", "re_export"),
+        (4, "src/pkg/source.py", "src/loader.py", "dynamic_import"),
+    ] {
+        let plan = successful_structured(&server.call(
+            json!(format!("plan-{id}")),
+            "validation_plan",
+            json!({"source":{"kind":"files","files":[changed]}}),
+        ));
+        assert_eq!(plan, cli_json(root, &["plan", changed, "--json"]));
+        let explanation = successful_structured(&server.call(
+            json!(id),
+            "explain_impact",
+            json!({"changed_file":changed,"affected_file":affected,"context":{"kind":"current"}}),
+        ));
+        assert_eq!(
+            explanation,
+            cli_json(root, &["why", changed, affected, "--json"])
+        );
+        assert!(
+            explanation["steps"]
+                .as_array()
+                .expect("steps")
+                .iter()
+                .any(|step| {
+                    step["evidence"].as_array().is_some_and(|evidence| {
+                        evidence.iter().any(|item| item["kind"] == evidence_kind)
+                    })
+                })
+        );
+    }
+
+    // Keep the server alive while plugin declarations change. Dependents are
+    // not edited: the refreshed index must attach them to the local plugin.
+    let before = successful_structured(&server.call(
+        json!(5),
+        "validation_plan",
+        json!({"source":{"kind":"files","files":["src/pkg/plugin_dependency.py"]}}),
+    ));
+    assert_eq!(before["validation"]["mode"], "none");
+    write(root, "conftest.py", "pytest_plugins = [\"pkg.plugin\"]\n");
+    let after = successful_structured(&server.call(
+        json!(6),
+        "validation_plan",
+        json!({"source":{"kind":"files","files":["src/pkg/plugin_dependency.py"]}}),
+    ));
+    assert!(
+        after["affected_tests"]
+            .as_array()
+            .expect("tests")
+            .contains(&json!("tests/test_fixture.py"))
+    );
+    assert_eq!(
+        after,
+        cli_json(root, &["plan", "src/pkg/plugin_dependency.py", "--json"])
+    );
+    let clean = successful_structured(&server.call(
+        json!(7),
+        "validation_plan",
+        json!({"source":{"kind":"files","files":["src/pkg/plugin_dependency.py"]}}),
+    ));
+    assert_eq!(clean, after);
+
+    for (id, path, reason) in [
+        (8, "src/computed.py", "unresolved_dynamic_import"),
+        (9, "src/exports.py", "unsupported_exports"),
+        (
+            10,
+            "tests/test_lookup.py",
+            "unsupported_pytest_relationship",
+        ),
+    ] {
+        let plan = successful_structured(&server.call(
+            json!(id),
+            "validation_plan",
+            json!({"source":{"kind":"files","files":[path]}}),
+        ));
+        assert_eq!(plan["validation"]["mode"], "full");
+        assert_eq!(plan["full_validation"]["reason"], reason);
+        assert_eq!(plan, cli_json(root, &["plan", path, "--json"]));
+    }
+    let (status, stdout, stderr) = server.finish();
+    assert!(status.success());
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+}
+
+#[test]
 fn protocol_errors_and_tool_errors_do_not_terminate_the_server() {
     let root = fixture("src-layout");
     let (mut server, _) = McpProcess::start(&root);

@@ -4,7 +4,9 @@
 //! plans and dependency explanations use the shared adapter contract.
 
 use serde::Serialize;
-use urmare_contract::{DependencyPathOutput, PlanOutput, to_pretty_json};
+use urmare_contract::{
+    DependencyEvidenceOutput, DependencyPathOutput, PlanOutput, dependency_evidence, to_pretty_json,
+};
 use urmare_core::{
     DependencyEdge, DependencyPath, FullValidationReason, GraphInspection, GraphSummary,
     ImpactResult, ImportProvenance, ImportResolutionStatus, ImportResolutionTrace, StaticImport,
@@ -58,6 +60,8 @@ struct DependencyEdgeOutput {
     dependent: String,
     dependency: String,
     imports: Vec<ImportProvenanceOutput>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evidence: Vec<DependencyEvidenceOutput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -205,6 +209,11 @@ fn full_validation(impact: &ImpactResult) -> Option<FullValidationOutput> {
             required: true,
             reason: match validation.reason {
                 FullValidationReason::ConfigurationChanged => "configuration_changed",
+                FullValidationReason::UnresolvedDynamicImport => "unresolved_dynamic_import",
+                FullValidationReason::UnsupportedPytestRelationship => {
+                    "unsupported_pytest_relationship"
+                }
+                FullValidationReason::UnsupportedExports => "unsupported_exports",
             },
             configuration_paths: paths(&validation.configuration_paths),
         })
@@ -250,6 +259,7 @@ fn dependency_edge(edge: &DependencyEdge) -> DependencyEdgeOutput {
         dependent: display_repository_path(&edge.dependent),
         dependency: display_repository_path(&edge.dependency),
         imports: provenance(&edge.imports),
+        evidence: dependency_evidence(&edge.evidence),
     }
 }
 
@@ -274,6 +284,7 @@ fn resolution_trace(trace: &ImportResolutionTrace) -> ImportResolutionTraceOutpu
             ImportResolutionStatus::Resolved => "resolved",
             ImportResolutionStatus::Unresolved => "unresolved",
             ImportResolutionStatus::InvalidRelativeImport => "invalid_relative_import",
+            ImportResolutionStatus::UnresolvedDynamicImport => "unresolved_dynamic_import",
         },
         candidate_modules: trace.candidate_modules.clone(),
         resolved_modules: trace

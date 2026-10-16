@@ -212,6 +212,8 @@ pub struct LocalImportResolver {
 pub enum ImportResolutionFailure {
     /// A relative import ascends above the importer's package.
     RelativeBeyondTopLevel,
+    /// A recognized dynamic import API had a computed target.
+    UnresolvedDynamicImport,
 }
 
 /// Deterministic local-module candidates and matches for one static import.
@@ -300,6 +302,58 @@ pub fn resolve_local_import_with(
                     format!("{base}.{name}")
                 };
                 add_prefixes(&candidate, &mut candidates, |candidate| {
+                    if is_local(candidate) {
+                        resolved.insert(candidate.to_owned());
+                    }
+                });
+            }
+        }
+        StaticImport::Dynamic {
+            module,
+            package,
+            level,
+            fromlist,
+            ..
+        } => {
+            let Some(module) = module else {
+                return LocalImportResolution {
+                    candidate_modules: Vec::new(),
+                    resolved_modules: Vec::new(),
+                    failure: Some(ImportResolutionFailure::UnresolvedDynamicImport),
+                };
+            };
+            if module.starts_with('.') {
+                let dots = module.bytes().take_while(|byte| *byte == b'.').count() as u32;
+                let name = module.trim_start_matches('.');
+                let anchor = package.as_deref().unwrap_or_default();
+                let dynamic_import = StaticImport::From {
+                    module: (!name.is_empty()).then(|| name.to_owned()),
+                    name: "*".to_owned(),
+                    level: dots.max(*level),
+                };
+                let anchor_file = if anchor.is_empty() {
+                    importer.clone()
+                } else {
+                    PythonFile {
+                        path: importer.path.clone(),
+                        module: anchor.to_owned(),
+                        is_package: true,
+                        is_test: importer.is_test,
+                    }
+                };
+                return resolve_local_import_with(&anchor_file, &dynamic_import, is_local);
+            }
+            add_prefixes(module, &mut candidates, |candidate| {
+                if is_local(candidate) {
+                    resolved.insert(candidate.to_owned());
+                }
+            });
+            for item in fromlist {
+                if item == "*" {
+                    continue;
+                }
+                let target = format!("{module}.{item}");
+                add_prefixes(&target, &mut candidates, |candidate| {
                     if is_local(candidate) {
                         resolved.insert(candidate.to_owned());
                     }

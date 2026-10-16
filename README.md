@@ -1,13 +1,21 @@
-# Urmare
+<p align="center">
+  <img src="logo/urmare-transparent.png" alt="Urmare logo" width="160" height="160">
+</p>
 
-Urmare is a fast, deterministic impact-analysis tool for Python repositories.
+<h1 align="center">Urmare</h1>
+
+<p align="center">
+  Fast, deterministic impact analysis for Python repositories.
+</p>
+
 It answers one question:
 
 > Given a Python code change, what follows from it?
 
-Urmare maps static imports, calculates affected modules and pytest files, and
-explains dependency paths. Analysis runs locally without a hosted service or a
-Python runtime.
+Urmare maps static imports, supported re-exports, literal dynamic imports, and
+pytest fixture/configuration relationships. It calculates affected modules and
+pytest files and explains dependency paths. Analysis runs locally without a
+hosted service or a Python runtime.
 
 The project is an early MVP. It intentionally focuses on file-level static
 imports and favors impact recall over aggressive test reduction.
@@ -15,7 +23,8 @@ imports and favors impact recall over aggressive test reduction.
 ## What Urmare does
 
 - finds direct and transitive dependents of one or more changed Python files;
-- selects affected pytest files;
+- selects affected pytest files, including applicable `conftest.py` and
+  statically recognizable fixture relationships;
 - produces structured validation plans for coding agents and CI;
 - analyzes staged, unstaged, untracked, committed, deleted, and renamed Git
   changes;
@@ -348,8 +357,16 @@ Set `URMARE_BENCH_50000=1` to include the 50,000-file case.
 
 ## Current limitations
 
-- static `import` and `from ... import ...` relationships only;
-- no dynamic-import, re-export, symbol, call, type, fixture, or framework graph;
+- static imports, supported package re-exports, and literal calls to
+  `importlib.import_module` and `__import__`;
+- pytest configuration, literal fixture requests (including literal
+  `request.getfixturevalue`), fixture dependencies,
+  autouse fixtures, `usefixtures` marks, and repository-local `pytest_plugins`;
+- conservative full validation when dynamic fixture lookup, computed exports,
+  or computed dynamic-import targets affect the requested change;
+- unsupported decorators, external plugins, computed `__all__`, and dynamic
+  fixture lookup are reported as uncertain rather than treated as resolved;
+- no symbol-, call-, type-, or framework-level graph;
 - test selection is file-level, not individual test functions;
 - unresolved imports mean no repository-local module matched; installed
   environments and package indexes are not inspected;

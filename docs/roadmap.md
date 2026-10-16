@@ -14,6 +14,10 @@ covered by offline tests, and available through the normal binary distribution.
 Urmare currently provides:
 
 - deterministic file-level Python import analysis;
+- pytest-aware file-level impact for applicable `conftest.py`, literal fixture
+  relationships, marks, autouse fixtures, and local plugins;
+- bounded static package re-export coverage and literal dynamic-import
+  resolution with explainable evidence;
 - direct and transitive impact calculation;
 - affected pytest-file selection;
 - Git-aware analysis for working-tree and merge-base changes;
@@ -184,15 +188,43 @@ Before Urmare executes validation itself, the project must specify:
 This work must not turn Urmare into a test framework, package manager, build
 system, or CI provider.
 
+## Next — Analysis coverage milestone
+
+Status: implemented on the coverage branch; release scheduling is separate
+
+Goal: reduce missed affected modules and tests without executing repository
+code or claiming complete Python runtime semantics.
+
+Implemented:
+
+- [x] applicable ancestor and nested `conftest.py` visibility;
+- [x] literal pytest fixture declarations, requests (including literal
+  `request.getfixturevalue`), dependencies, overrides, autouse fixtures,
+  `usefixtures`, and repository-local `pytest_plugins`;
+- [x] conservative uncertainty handling for computed fixture lookup;
+- [x] chained local re-exports, aliases, wildcard imports, literal `__all__`,
+  package initializers, namespace packages, and package/submodule ambiguity;
+- [x] literal `importlib.import_module` and `__import__` targets with aliases,
+  relative anchors, and source locations;
+- [x] unresolved dynamic-import, computed-export, and unsupported-fixture
+  diagnostics with conservative validation fallback;
+- [x] persistent-index compatibility invalidation and fresh/incremental parity
+  coverage for the new syntax facts; and
+- [x] graph, impact, tests, plan, and why evidence paths using one domain model.
+
+Explicitly unsupported: arbitrary decorators, computed `__all__`, external or
+computed plugin lists, dynamic fixture lookup, reflection, and symbol/call
+analysis. These remain conservative rather than silently producing `none`.
+
 ## Later — Analysis coverage
 
 Status: long-term product work
 
 Candidate improvements, in priority order:
 
-1. improve static import coverage while preserving explainability;
+1. measure recall on additional real repositories while preserving explainability;
 2. represent uncertain Python relationships explicitly;
-3. model common re-export and package-boundary behavior;
+3. extend only narrowly justified static framework relationships;
 4. add framework-aware relationships only where they remain deterministic;
 5. evaluate symbol-level impact after file-level recall is well measured; and
 6. add broader validation kinds only after the pytest plan contract is stable.

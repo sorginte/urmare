@@ -845,6 +845,28 @@ plugin discovery
 
 The product should communicate uncertainty rather than pretending complete knowledge.
 
+## Current static coverage
+
+The file-level graph recognizes ordinary imports plus a deliberately bounded
+set of Python relationships that commonly affect pytest collection:
+
+- package initializer re-exports through `from` imports, literal `__all__`,
+  wildcard re-exports, aliases, and chained local package boundaries;
+- literal `importlib.import_module` and `__import__` calls, including supported
+  aliases and literal relative targets; and
+- applicable ancestor `conftest.py` files, literal fixture declarations and
+  requests (including literal `request.getfixturevalue`), fixture-to-fixture
+  parameters, `autouse`, `usefixtures` marks, and repository-local literal
+  `pytest_plugins` entries.
+
+These relationships carry explicit evidence in graph inspection and `why`.
+They remain file-level and deterministic: Urmare never imports project code,
+executes decorators, evaluates computed exports, resolves external plugins, or
+performs dynamic fixture lookup. A recognized computed target or unsupported
+export/fixture form is reported as uncertainty and widens validation when it
+could make selective analysis unsafe. An unresolved third-party import by
+itself does not force full validation.
+
 ---
 
 # Risk / Blast Radius Score

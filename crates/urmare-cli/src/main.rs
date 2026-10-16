@@ -424,6 +424,22 @@ fn print_graph_inspection(inspection: &GraphInspection, show_all: bool) {
                 provenance.import,
             );
         }
+        for evidence in &edge.evidence {
+            if evidence.kind == urmare_core::DependencyEvidenceKind::Import {
+                continue;
+            }
+            println!(
+                "    via {}:{}:{}  {:?}{}",
+                display_repository_path(&edge.dependent),
+                evidence.location.line,
+                evidence.location.column,
+                evidence.kind,
+                evidence
+                    .name
+                    .as_deref()
+                    .map_or(String::new(), |name| format!(" ({name})")),
+            );
+        }
     }
     print_omitted(inspection.edges.len(), shown_edges);
 
@@ -437,6 +453,7 @@ fn print_graph_inspection(inspection: &GraphInspection, show_all: bool) {
             ImportResolutionStatus::Resolved => "resolved",
             ImportResolutionStatus::Unresolved => "unresolved",
             ImportResolutionStatus::InvalidRelativeImport => "invalid relative import",
+            ImportResolutionStatus::UnresolvedDynamicImport => "unresolved dynamic import",
         };
         println!(
             "  {}:{}:{}  {} [{status}]",
@@ -504,15 +521,20 @@ fn print_impact(impact: &ImpactResult, show_all: bool) {
     println!("Impact analysis");
     if let Some(full_validation) = &impact.full_validation {
         println!("\nFull validation required");
-        println!(
-            "  Repository configuration changed: {}",
-            full_validation
-                .configuration_paths
-                .iter()
-                .map(|path| display_repository_path(path))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let paths = full_validation
+            .configuration_paths
+            .iter()
+            .map(|path| display_repository_path(path))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if full_validation.reason == FullValidationReason::ConfigurationChanged {
+            println!("  Repository configuration changed: {paths}");
+        } else {
+            println!(
+                "  Reason: {} ({paths})",
+                full_validation_reason(full_validation.reason)
+            );
+        }
         println!("  Selective module impact is unavailable.");
         println!("  All currently discovered tests are selected.");
         print_path_group("Changed Python files", &changed, impact, false, show_all);
@@ -606,6 +628,10 @@ fn print_validation_plan(plan: &ValidationPlan) {
             "  Reason: {}",
             match full_validation.reason {
                 FullValidationReason::ConfigurationChanged => "configuration_changed",
+                FullValidationReason::UnresolvedDynamicImport => "unresolved_dynamic_import",
+                FullValidationReason::UnsupportedPytestRelationship =>
+                    "unsupported_pytest_relationship",
+                FullValidationReason::UnsupportedExports => "unsupported_exports",
             }
         );
         let configuration_paths = full_validation
@@ -668,7 +694,8 @@ fn print_full_validation_warning(impact: &ImpactResult) {
         return;
     };
     eprintln!(
-        "warning: full validation required because repository configuration changed: {}; selecting all currently discovered tests",
+        "warning: full validation required because {}: {}; selecting all currently discovered tests",
+        full_validation_reason(full_validation.reason),
         full_validation
             .configuration_paths
             .iter()
@@ -676,6 +703,17 @@ fn print_full_validation_warning(impact: &ImpactResult) {
             .collect::<Vec<_>>()
             .join(", ")
     );
+}
+
+fn full_validation_reason(reason: FullValidationReason) -> &'static str {
+    match reason {
+        FullValidationReason::ConfigurationChanged => "repository configuration changed",
+        FullValidationReason::UnresolvedDynamicImport => "a dynamic import target is unresolved",
+        FullValidationReason::UnsupportedPytestRelationship => {
+            "a pytest fixture lookup is unresolved"
+        }
+        FullValidationReason::UnsupportedExports => "a module export is computed",
+    }
 }
 
 fn print_path_group(

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use urmare_python::{SourceLocation, StaticImport};
 
 use crate::display_repository_path;
@@ -47,6 +48,7 @@ pub enum ImportResolutionStatus {
     Resolved,
     Unresolved,
     InvalidRelativeImport,
+    UnresolvedDynamicImport,
 }
 
 /// An inspectable record of how one static import was resolved locally.
@@ -72,6 +74,32 @@ pub struct DependencyEdge {
     pub dependency: PathBuf,
     /// Every import occurrence that produced this unique graph edge.
     pub imports: Vec<ImportProvenance>,
+    /// Non-import evidence, such as pytest fixture visibility or a plugin.
+    pub evidence: Vec<DependencyEvidence>,
+}
+
+/// The semantic relationship represented by one repository-local edge.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyEvidenceKind {
+    Import,
+    DynamicImport,
+    ReExport,
+    PytestConfiguration,
+    PytestFixture,
+    PytestUsefixtures,
+    PytestPlugin,
+}
+
+/// Explainable evidence for a dependency relationship. Import evidence keeps
+/// the existing structured import payload; pytest evidence carries a literal
+/// name and source location instead of pretending it was a Python import.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DependencyEvidence {
+    pub kind: DependencyEvidenceKind,
+    pub location: SourceLocation,
+    pub import: Option<StaticImport>,
+    pub name: Option<String>,
 }
 
 /// One Python module exposed by a repository path.
@@ -106,6 +134,7 @@ pub struct DependencyStep {
     pub dependent: PathBuf,
     pub dependency: PathBuf,
     pub imports: Vec<ImportProvenance>,
+    pub evidence: Vec<DependencyEvidence>,
 }
 
 /// One explainable dependency path from an affected file to its changed dependency.
@@ -117,7 +146,7 @@ pub struct DependencyPath {
     pub affected: PathBuf,
     /// Ordered path from `affected` toward `changed`, including both endpoints.
     pub path: Vec<PathBuf>,
-    /// Ordered import evidence for every adjacent pair in `path`.
+    /// Ordered import and framework evidence for every adjacent pair in `path`.
     pub steps: Vec<DependencyStep>,
 }
 
@@ -233,6 +262,14 @@ impl ValidationPlan {
 pub enum FullValidationReason {
     /// The repository-root `pyproject.toml` changed and may redefine analysis boundaries.
     ConfigurationChanged,
+    /// A recognized dynamic import has a computed target in the affected
+    /// analysis scope.
+    UnresolvedDynamicImport,
+    /// A recognized pytest relationship uses unsupported dynamic lookup.
+    UnsupportedPytestRelationship,
+    /// Export behavior is computed or otherwise outside the supported static
+    /// subset.
+    UnsupportedExports,
 }
 
 /// Presentation-independent details for a conservative full-validation fallback.

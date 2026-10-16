@@ -182,6 +182,9 @@ fn impact_value(impact: &ImpactResult) -> Value {
             "required": true,
             "reason": match validation.reason {
                 FullValidationReason::ConfigurationChanged => "configuration_changed",
+                FullValidationReason::UnresolvedDynamicImport => "unresolved_dynamic_import",
+                FullValidationReason::UnsupportedPytestRelationship => "unsupported_pytest_relationship",
+                FullValidationReason::UnsupportedExports => "unsupported_exports",
             },
             "configuration_paths": paths(&validation.configuration_paths),
         })

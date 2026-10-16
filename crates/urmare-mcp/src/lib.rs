@@ -621,6 +621,103 @@ mod tests {
     }
 
     #[test]
+    fn coverage_results_validate_against_advertised_schemas() {
+        use std::fs;
+        use std::path::Path;
+
+        use urmare_core::{RepositoryAnalysis, ValidationPlan};
+
+        let repository = tempfile::tempdir().expect("repository");
+        let root = repository.path();
+        for (path, source) in [
+            (
+                "pkg/__init__.py",
+                "from .source import VALUE as PublicValue\n",
+            ),
+            ("pkg/source.py", "VALUE = 1\n"),
+            ("consumer.py", "from pkg import PublicValue\n"),
+            (
+                "loader.py",
+                "import importlib\nimportlib.import_module(\"pkg.source\")\n",
+            ),
+            (
+                "conftest.py",
+                "import pytest\n@pytest.fixture\ndef value():\n    return 1\n",
+            ),
+            (
+                "tests/test_value.py",
+                "def test_value(value):\n    assert value\n",
+            ),
+            (
+                "computed.py",
+                "import importlib\nimportlib.import_module(module_name)\n",
+            ),
+            ("exports.py", "__all__ = names\n"),
+            (
+                "tests/test_lookup.py",
+                "def test_lookup(request):\n    request.getfixturevalue(name)\n",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("directories");
+            fs::write(path, source).expect("source");
+        }
+        let analysis = RepositoryAnalysis::build_uncached_profiled(root)
+            .expect("analysis")
+            .0;
+        let tools = UrmareMcpServer::tools();
+        for (tool_name, requests) in [
+            (
+                "validation_plan",
+                vec![
+                    ("computed.py", None),
+                    ("exports.py", None),
+                    ("tests/test_lookup.py", None),
+                    ("pkg/source.py", None),
+                ],
+            ),
+            (
+                "explain_impact",
+                vec![
+                    ("conftest.py", Some("tests/test_value.py")),
+                    ("pkg/source.py", Some("consumer.py")),
+                    ("pkg/source.py", Some("loader.py")),
+                ],
+            ),
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == tool_name)
+                .expect("tool");
+            let schema = serde_json::Value::Object(
+                tool.output_schema
+                    .as_ref()
+                    .expect("schema")
+                    .as_ref()
+                    .clone(),
+            );
+            let validator = jsonschema::validator_for(&schema).expect("schema validator");
+            for (changed, affected) in requests {
+                let output = if let Some(affected) = affected {
+                    let explanation = analysis
+                        .why(Path::new(changed), Path::new(affected))
+                        .expect("explanation");
+                    serde_json::to_value(urmare_contract::DependencyPathOutput::from(&explanation))
+                        .expect("JSON")
+                } else {
+                    let plan = ValidationPlan::from_impact(
+                        analysis.impact(Path::new(changed)).expect("impact"),
+                    );
+                    serde_json::to_value(urmare_contract::PlanOutput::from(&plan)).expect("JSON")
+                };
+                validator
+                    .validate(&output)
+                    .unwrap_or_else(|error| panic!("{tool_name} {changed}: {error}"));
+            }
+        }
+    }
+
+    #[test]
     fn representative_results_validate_against_advertised_output_schemas() {
         let tools = UrmareMcpServer::tools();
         let cases = [
