@@ -39,13 +39,13 @@ Sorginte service, Python package installation, an LLM, or network access.
 ```text
 v0.3 validation plans (released)
     ↓
-v0.4 local MCP tools (release preparation)
+v0.4 local MCP tools (released)
     ↓
-agent-specific onboarding and enforcement
+pytest-aware analysis coverage (merged; not yet released)
     ↓
-independent CI integration
+v0.5 independent CI integration (implemented; not yet released)
     ↓
-optional configurable validation execution
+agent-specific enforcement / optional configurable validation execution
 ```
 
 ## v0.3.0 — Agent validation plans
@@ -79,7 +79,7 @@ Definition of done:
 
 ## v0.4.0 — Local MCP integration
 
-Status: implemented; preparing the v0.4.0 release
+Status: [released as v0.4.0](https://github.com/sorginte/urmare/releases/tag/v0.4.0) on 2026-10-16
 
 Goal: expose Urmare as native, read-only repository intelligence to MCP-capable
 coding agents without changing analysis semantics.
@@ -118,9 +118,9 @@ Not included in this milestone:
 - arbitrary shell commands; or
 - LLM-generated impact relationships.
 
-## Next — Agent onboarding and enforcement
+## Later — Agent onboarding and enforcement
 
-Status: follows the local MCP release
+Status: separate follow-up; CI does not enforce agent completion
 
 Goal: make correct use of the validation plan repeatable instead of relying on
 an agent to infer the workflow.
@@ -145,27 +145,31 @@ Definition of done:
 - no integration silently grants unrestricted command execution; and
 - agent output does not replace independent CI validation.
 
-## Later — CI integration
+## v0.5.0 — GitHub Actions integration
 
-Status: planned direction; interface not yet committed
+Status: implemented; intended for v0.5.0, not yet released
 
 Goal: let CI independently recompute and enforce the same validation plan used
 by agents.
 
-Potential scope:
+Implemented:
 
-- [ ] define a CI-facing plan-consumption contract;
-- [ ] run every structured validation step through the repository's configured
-  environment;
-- [ ] preserve plan and validation results as reviewable artifacts;
-- [ ] report selective, none, and full decisions clearly;
-- [ ] fail closed when planning or execution is incomplete;
-- [ ] evaluate a small GitHub Action after the portable CI contract is stable;
-  and
-- [ ] keep the underlying CLI usable in any CI provider.
+- [x] root composite Action invoking the existing CLI with an explicit base;
+- [x] pinned standalone binary download, checksum and version verification,
+  plus an existing-binary override for offline and candidate CI;
+- [x] complete unchanged v1 plan JSON, atomic publication, outputs, and summary;
+- [x] safe pytest-only example consumer using the project's uv environment;
+- [x] PR head checkout, recorded base SHA, full Git history, and artifact guide;
+- [x] explicit selective, none, full, and failure handling;
+- [x] offline installer, contract, Git fixture, consumer, and native CI tests; and
+- [x] portable CLI/JSON boundary remains usable in other CI providers.
 
 CI must recompute the plan from the checked-out commit and comparison base. It
 must not trust a plan supplied only by a coding agent.
+
+The Action never executes pytest or installs project dependencies. The
+consuming workflow owns execution and artifact upload; see [ci.md](ci.md).
+Other CI adapters, PR comments, and configurable execution remain separate.
 
 ## Later — Configurable validation execution
 
@@ -188,9 +192,9 @@ Before Urmare executes validation itself, the project must specify:
 This work must not turn Urmare into a test framework, package manager, build
 system, or CI provider.
 
-## Next — Analysis coverage milestone
+## Analysis coverage milestone
 
-Status: implemented on the coverage branch; release scheduling is separate
+Status: merged into main after v0.4.0; not yet released
 
 Goal: reduce missed affected modules and tests without executing repository
 code or claiming complete Python runtime semantics.

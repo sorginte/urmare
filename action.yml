@@ -1,0 +1,41 @@
+name: Urmare validation plan
+description: Independently compute a deterministic pytest validation plan; never execute tests
+author: Sorginte
+inputs:
+  root:
+    description: Git repository root (default GITHUB_WORKSPACE); relative to the workspace
+    default: ''
+  base:
+    description: Required existing local Git comparison base (PR recorded base SHA recommended)
+    required: true
+  version:
+    description: Exact stable binary version, without v; required even with binary override
+    required: true
+  plan-path:
+    description: New absolute JSON path outside the analyzed repository; default unique RUNNER_TEMP path
+    default: ''
+  binary:
+    description: Existing executable path; bypass downloads, require exact version match
+    default: ''
+outputs:
+  mode:
+    description: selective, none, or full
+    value: ${{ steps.plan.outputs.mode }}
+  plan-path:
+    description: Absolute path to the complete unchanged schema-version-1 JSON
+    value: ${{ steps.plan.outputs.plan-path }}
+  affected-test-count:
+    description: Number of affected test files (full mode still runs unrestricted discovery)
+    value: ${{ steps.plan.outputs.affected-test-count }}
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        URMARE_ROOT: ${{ inputs.root }}
+        URMARE_BASE: ${{ inputs.base }}
+        URMARE_VERSION: ${{ inputs.version }}
+        URMARE_PLAN_PATH: ${{ inputs.plan-path }}
+        URMARE_BINARY: ${{ inputs.binary }}
+      run: python -B "$GITHUB_ACTION_PATH/scripts/ci/plan.py"

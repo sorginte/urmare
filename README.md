@@ -181,6 +181,10 @@ uv run pytest tests/api/test_checkout.py
 Urmare plans validation but does not execute pytest. Agents and CI remain
 responsible for invoking the repository's established test environment.
 
+The [GitHub Actions guide](docs/ci.md) covers independent PR planning, safe
+`uv run pytest` consumption, and plan artifacts. The planning Action is intended
+for v0.5.0; that release is not yet available.
+
 ## Local MCP server
 
 MCP support requires Urmare 0.4.0 or newer.

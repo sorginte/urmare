@@ -334,15 +334,18 @@ The validation mode is:
 
 ---
 
-## Future Story: CI integration
+## Story 5: CI integration (intended for v0.5.0)
 
 A CI workflow runs:
 
 ```bash
-urmare plan --git-diff origin/main --json
+urmare --root ROOT plan --git-diff BASE --json
 ```
 
-and uses the structured result to determine which validations should execute.
+The GitHub Action independently computes this plan from the checked-out
+repository. The consuming workflow validates and executes every pytest step
+through its established environment and preserves the complete JSON artifact.
+No agent-supplied plan is trusted. See [ci.md](ci.md).
 
 ---
 
@@ -1285,12 +1288,12 @@ must never prevent correct analysis.
 
 ---
 
-# CI Vision
+# CI Integration
 
 The portable CI integration boundary is the deterministic CLI/JSON plan:
 
 ```bash
-urmare plan --git-diff origin/main --json
+urmare --root ROOT plan --git-diff BASE --json
 ```
 
 CI should independently recompute this plan rather than trusting an agent's
@@ -1298,30 +1301,41 @@ earlier result, then invoke every step through the repository's established
 environment. Agents may obtain the identical DTO through local MCP, but Urmare
 does not execute those steps and CI must not trust an earlier agent result.
 
-Eventually:
+The first integration is a root composite GitHub Action, intended for the
+unreleased v0.5.0. Python standard-library scripts install a pinned standalone
+release in Action-owned runner temporary storage, verify SHA256SUMS and the
+reported version, and invoke the existing CLI. An explicit existing executable
+override bypasses downloads while retaining version verification. No package
+version is inferred from the Action revision and no moving latest alias is used.
 
-```bash
-urmare ci --git-diff origin/main
-```
+Inputs are `root` (workspace by default), required `base` and `version`, optional
+`plan-path` (a new absolute path outside the analyzed repository, defaulting to
+a unique runner temporary file), and optional `binary`. Outputs are `mode`,
+`plan-path`, and `affected-test-count`. The plan's schema-version-1 JSON remains
+byte-for-byte CLI output. Publication is atomic and refuses existing files.
+The summary identifies HEAD, the comparison base, mode, counts, and fallback
+reason. The consuming workflow uploads artifacts separately.
 
-could output a validation plan:
+PR examples analyze the recorded head SHA against the recorded base SHA with
+full checkout history. The CLI retains merge-base semantics, exclusions,
+deleted-file and previous-rename identities, and all conservative fallback
+reasons. The Action refuses shallow history and never fetches refs itself.
+Non-PR events also require an explicit base.
 
-```text
-Run:
-  ruff src/payments
-  ty src/payments
-  pytest tests/payments tests/api/test_checkout.py
+The Action cannot execute pytest, install project dependencies, or accept shell
+commands. A separately vendored pytest-only consumer validates the complete
+plan before execution: supported schema, known mode/reason, supported pytest
+steps, string arrays, mode consistency, and contained repository-relative
+Python targets. Selective mode runs every selected file using argument arrays;
+full mode invokes unrestricted discovery; none explicitly skips. Planning,
+malformed-plan, and validation failures fail the workflow. Static analysis does
+not guarantee runtime dependency completeness: initial adoption should compare
+plans against the existing full suite. [ci.md](ci.md) defines setup, provenance,
+permissions, limitations, and the complete example.
 
-Skip:
-  analytics
-  notifications
-  reporting
-
-Tests avoided:
-  8,412
-```
-
-Urmare produces the plan rather than attempting to become a CI execution platform.
+Other CI providers can consume the same CLI contract. Additional validation
+kinds, execution configuration, PR comments, and agent enforcement require
+separate product decisions.
 
 ---
 
