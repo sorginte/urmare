@@ -48,6 +48,42 @@ jobs:
       - name: Build release binary
         run: cargo +stable build --release --locked -p urmare-cli
 
+      - name: Test planning Action and pytest consumer offline
+        env:
+          URMARE_TEST_BINARY: ${{ github.workspace }}/target/release/urmare
+        run: python -m unittest discover -s tests/ci -v
+
+      - name: Prepare independent Python CI fixture
+        id: ci-fixture
+        run: python tests/ci/smoke.py prepare
+
+      - name: Generate plan with the candidate Action
+        id: ci-plan
+        uses: ./
+        with:
+          root: ${{ steps.ci-fixture.outputs.root }}
+          base: ${{ steps.ci-fixture.outputs.base }}
+          version: ${{ steps.ci-fixture.outputs.version }}
+          binary: ${{ steps.ci-fixture.outputs.binary }}
+          plan-path: ${{ runner.temp }}/urmare-ci-plan.json
+
+      - name: Consume fixture plan with controlled pytest harness
+        env:
+          PLAN_PATH: ${{ steps.ci-plan.outputs.plan-path }}
+          FIXTURE_ROOT: ${{ steps.ci-fixture.outputs.root }}
+        run: python tests/ci/smoke.py check
+
+      - name: Preserve CI integration smoke evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-integration-smoke
+          path: |
+            ${{ runner.temp }}/urmare-ci-plan.json
+            ${{ runner.temp }}/urmare-ci-consumer.json
+          if-no-files-found: warn
+          retention-days: 7
+
   portability:
     name: Test and build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -78,6 +114,11 @@ jobs:
 
       - name: Build release binary
         run: cargo +stable build --release --locked -p urmare-cli
+
+      - name: Test planning Action and pytest consumer offline
+        env:
+          URMARE_TEST_BINARY: ${{ github.workspace }}/target/release/urmare${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: python -m unittest discover -s tests/ci -v
 
   msrv:
     name: Minimum Rust 1.95

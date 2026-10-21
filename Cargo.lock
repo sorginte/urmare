@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "tempfile",
  "urmare-core",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-contract"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "blake3",
  "directories",
@@ -1904,11 +1904,11 @@ dependencies = [
 
 [[package]]
 name = "urmare-graph"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "urmare-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "jsonschema",
  "rmcp",
@@ -1925,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "urmare-python"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "globset",
  "ruff_python_ast",
