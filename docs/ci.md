@@ -4,7 +4,7 @@ The planning Action is implemented for the **intended v0.5.0 release**. That
 tag and its release archives do not exist yet. Examples using
 `uses: sorginte/urmare@v0.5.0` describe usage after publication, not an available
 release today. Until then, source-build CI uses `uses: ./` and the `binary`
-override with the candidate's actual version (currently 0.4.0).
+override with the candidate's actual version (currently 0.5.0, not yet released).
 
 ## Planning and execution
 
